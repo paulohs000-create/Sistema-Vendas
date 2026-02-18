@@ -17,11 +17,22 @@ def get_db_connection():
 
 
 # -----------------------------------------------------------------------------
-# FRONT
+# PÁGINAS (FRONT)
 # -----------------------------------------------------------------------------
 @app.get("/")
 def atendimento_page():
     return render_template("atendimento.html")
+
+
+@app.get("/gerenciamento")
+def gerenciamento_page():
+    # arquivo existe como templates/Gerenciamento.html (com G maiúsculo)
+    return render_template("Gerenciamento.html")
+
+
+@app.get("/costureiras")
+def costureiras_page():
+    return render_template("costureiras.html")
 
 
 # -----------------------------------------------------------------------------
@@ -41,6 +52,26 @@ def db_test():
                 cur.execute("SELECT now() AS server_time;")
                 row = cur.fetchone()
         return jsonify(row)
+    finally:
+        conn.close()
+
+
+@app.get("/schema/tables")
+def schema_tables():
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                    ORDER BY table_name;
+                    """
+                )
+                rows = cur.fetchall()
+        return jsonify(rows)
     finally:
         conn.close()
 
@@ -117,8 +148,8 @@ def update_client_nif(client_id: int):
 
 
 # -----------------------------------------------------------------------------
-# SERVICES (para o atendimento.html)
-# Retorna no formato: { "Categoria": [ {id, nome, preco}, ... ] }
+# SERVICES (SERVIÇOS + CATEGORIAS)
+# Tabela: services(id_service, name, description, price, category, id_seamstress)
 # -----------------------------------------------------------------------------
 @app.get("/services")
 def get_services_grouped():
@@ -128,7 +159,7 @@ def get_services_grouped():
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id_service, name, price, category
+                    SELECT id_service, name, description, price, category
                     FROM services
                     ORDER BY category, name
                     """
@@ -143,7 +174,9 @@ def get_services_grouped():
                 {
                     "id": r["id_service"],
                     "nome": r["name"],
+                    "descricao": r["description"],
                     "preco": float(r["price"]),
+                    "categoria": r["category"],
                 }
             )
 
@@ -152,8 +185,133 @@ def get_services_grouped():
         conn.close()
 
 
+@app.get("/services/categories")
+def get_service_categories():
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT category
+                    FROM services
+                    WHERE category IS NOT NULL AND category <> ''
+                    ORDER BY category
+                    """
+                )
+                rows = cur.fetchall()
+        return jsonify([r["category"] for r in rows])
+    finally:
+        conn.close()
+
+
+@app.post("/services")
+def create_service():
+    """
+    Cria um serviço (para o Gerenciamento).
+    Espera JSON:
+    {
+      "name": "...",
+      "price": 10.0,
+      "category": "Barras",
+      "description": "opcional"
+    }
+    """
+    data = request.json or {}
+    name = (data.get("name") or "").strip()
+    category = (data.get("category") or "").strip()
+    description = (data.get("description") or "").strip() or None
+    price = data.get("price")
+
+    if not name or not category:
+        return jsonify({"error": "Campos obrigatórios: name, category"}), 400
+    if price is None:
+        return jsonify({"error": "Campo obrigatório: price"}), 400
+
+    try:
+        price_val = float(price)
+    except Exception:
+        return jsonify({"error": "price inválido"}), 400
+
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO services (name, description, price, category)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id_service
+                    """,
+                    (name, description, price_val, category),
+                )
+                new_id = cur.fetchone()["id_service"]
+        return jsonify({"id_service": new_id}), 201
+    finally:
+        conn.close()
+
+
+# -----------------------------------------------------------------------------
+# PRODUCTS (se você usar produtos do PDV)
+# Tabela: products(id_product, name, description, sale_price, stock)
+# -----------------------------------------------------------------------------
+@app.get("/products")
+def list_products():
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id_product, name, description, sale_price, stock
+                    FROM products
+                    ORDER BY name
+                    """
+                )
+                rows = cur.fetchall()
+        return jsonify(rows)
+    finally:
+        conn.close()
+
+
+@app.post("/products")
+def create_product():
+    data = request.json or {}
+    name = (data.get("name") or "").strip()
+    description = (data.get("description") or "").strip() or None
+    sale_price = data.get("sale_price")
+    stock = data.get("stock")
+
+    if not name or sale_price is None or stock is None:
+        return jsonify({"error": "Campos obrigatórios: name, sale_price, stock"}), 400
+
+    try:
+        sale_price_val = float(sale_price)
+        stock_val = int(stock)
+    except Exception:
+        return jsonify({"error": "sale_price/stock inválidos"}), 400
+
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO products (name, description, sale_price, stock)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id_product
+                    """,
+                    (name, description, sale_price_val, stock_val),
+                )
+                new_id = cur.fetchone()["id_product"]
+        return jsonify({"id_product": new_id}), 201
+    finally:
+        conn.close()
+
+
 # -----------------------------------------------------------------------------
 # PEDIDOS (para o atendimento.html)
+# Tabela: pedidos + pedido_servicos
 # -----------------------------------------------------------------------------
 @app.post("/pedidos")
 def create_pedido():
@@ -179,7 +337,6 @@ def create_pedido():
     try:
         with conn:
             with conn.cursor() as cur:
-                # cria pedido
                 cur.execute(
                     """
                     INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status)
@@ -190,7 +347,6 @@ def create_pedido():
                 )
                 pedido_id = cur.fetchone()["id_pedido"]
 
-                # itens do pedido
                 for s in services:
                     service_id = s.get("id")
                     quantity = s.get("quantity")
