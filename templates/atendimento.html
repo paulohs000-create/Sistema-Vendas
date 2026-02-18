@@ -119,7 +119,10 @@
     </div>
 
     <script>
-        const API_URL = `${window.location.protocol}//${window.location.host}`;
+        // ✅ Railway/produção e local automaticamente
+        const API_URL = window.location.origin;
+
+        // ✅ Servidor de impressão continua local (se você usa um print-agent no PC da loja)
         const PRINT_SERVER_URL = "http://127.0.0.1:8080";
         
         const mainApplication = document.getElementById('main-application');
@@ -154,7 +157,7 @@
         const nifDetailsContainer = document.getElementById('nif-details-container');
         
         let allServicesData = {};
-        let currentClient = null;
+        let currentClient = null; // agora terá id_client
         let selectedServices = [];
         let currentServiceAction = null;
 
@@ -169,13 +172,13 @@
             }
             clientInfoParagraph.textContent = 'A buscar...';
             try {
-                const response = await fetch(`${API_URL}/clients/${phone}`);
+                const response = await fetch(`${API_URL}/clients/${encodeURIComponent(phone)}`);
                 if (response.status === 404) {
                     clientInfoParagraph.textContent = 'Cliente não encontrado. Por favor, preencha os dados para cadastro.';
                     clientInfoParagraph.className = 'text-blue-600 text-base font-semibold mt-3 h-6';
                     clientDetailsInputDiv.classList.remove('hidden');
                 } else if (response.ok) {
-                    currentClient = await response.json();
+                    currentClient = await response.json(); // {id_client, name, phone, nif}
                     clientInfoParagraph.innerHTML = `Cliente encontrado: <strong class="text-purple-700">${currentClient.name}</strong>`;
                     clientInfoParagraph.className = 'text-green-600 text-base font-semibold mt-3 h-6';
                     continueToServicesButton.classList.remove('hidden');
@@ -202,7 +205,10 @@
                 });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || 'Erro ao cadastrar.');
-                currentClient = { id: result.id, name: name, nif: nif };
+
+                // ✅ Ajuste: backend retorna id_client
+                currentClient = { id_client: result.id_client, name: name, phone: phone, nif: nif };
+
                 clientDetailsInputDiv.classList.add('hidden');
                 clientInfoParagraph.innerHTML = `Cliente cadastrado: <strong class="text-purple-700">${name}</strong>`;
                 clientInfoParagraph.className = 'text-green-600 text-base font-semibold mt-3 h-6';
@@ -295,7 +301,8 @@
             const nif = nifInput.value.trim();
             if (!nif) { feedbackEl.textContent = 'Por favor, insira o NIF.'; feedbackEl.className = 'text-red-500 text-sm h-4 mt-1'; return; }
             try {
-                const response = await fetch(`${API_URL}/clients/${currentClient.id}/nif`, {
+                // ✅ Ajuste: usar id_client
+                const response = await fetch(`${API_URL}/clients/${currentClient.id_client}/nif`, {
                     method: 'PUT', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ nif: nif })
                 });
@@ -363,12 +370,18 @@
             let subtotal = 0;
             selectedServices.forEach(s => { subtotal += s.preco * s.quantity; });
             const totalPrice = subtotal - discount;
+
             const orderData = {
-                clientId: currentClient.id, deliveryDate: deliveryDate, comments: comments, discount: discount, totalPrice: totalPrice,
+                // ✅ Ajuste: id_client
+                clientId: currentClient.id_client,
+                deliveryDate: deliveryDate,
+                comments: comments,
+                discount: discount,
+                totalPrice: totalPrice,
                 services: selectedServices.map(s => ({ 
-                    id: s.id, 
-                    quantity: s.quantity, 
-                    description: s.description, 
+                    id: s.id,
+                    quantity: s.quantity,
+                    description: s.description,
                     preco: s.preco,
                     nome: s.nome
                 }))
@@ -407,7 +420,7 @@
                 });
 
                 if (!printResponse.ok) {
-                   const printError = await printResponse.json();
+                   const printError = await printResponse.json().catch(() => ({ error: "Falha desconhecida no print server" }));
                    throw new Error(`Pedido guardado, mas falha ao imprimir: ${printError.error}`);
                 }
                 
