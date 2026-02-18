@@ -67,7 +67,9 @@
     </div>
 
     <script>
-        const API_URL = "http://127.0.0.1:7000";
+        // ✅ Corrigido para Railway / Prod / Local
+        const API_URL = window.location.origin;
+
         const dateFilter = document.getElementById('date-filter');
         const searchInput = document.getElementById('search-input');
         const searchButton = document.getElementById('search-button');
@@ -79,7 +81,7 @@
         const modalCancelBtn = document.getElementById('modal-cancel-button');
         const modalConfirmBtn = document.getElementById('modal-confirm-button');
         let serviceToCompleteId = null;
-        
+
         const loadStats = async () => {
             try {
                 const response = await fetch(`${API_URL}/pedidos/stats`);
@@ -87,14 +89,16 @@
                 const stats = await response.json();
                 pendingCountEl.textContent = stats.pending_today;
                 completedCountEl.textContent = stats.completed_today;
-            } catch (error) { console.error(error); }
+            } catch (error) {
+                console.error(error);
+            }
         };
 
         const fetchAndRenderServices = async () => {
             const selectedDate = dateFilter.value;
             const searchTerm = searchInput.value.trim();
             const url = new URL(`${API_URL}/pedidos/pendentes`);
-            
+
             if (selectedDate) url.searchParams.append('date', selectedDate);
             if (searchTerm) url.searchParams.append('search', searchTerm);
 
@@ -102,11 +106,10 @@
                 const response = await fetch(url);
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.error || 'Não foi possível carregar os serviços.');
-                
+
                 if (searchTerm) {
                     renderServiceList(data, `Resultados da Busca`);
                 } else if (selectedDate) {
-                    // A API já retorna uma lista simples quando a data é especificada
                     renderServiceList(data, `Serviços para ${new Date(selectedDate + 'T00:00:00').toLocaleDateString('pt-PT')}`);
                 } else {
                     renderCategorizedLists(data);
@@ -126,7 +129,7 @@
             ];
             let contentFound = false;
             categories.forEach(cat => {
-                if(cat.data && cat.data.length > 0) {
+                if (cat.data && cat.data.length > 0) {
                     contentFound = true;
                     const section = document.createElement('div');
                     section.innerHTML = `<h3 class="text-xl font-bold text-${cat.color}-600 border-b-2 border-${cat.color}-200 pb-2 mb-4">${cat.title}</h3>`;
@@ -134,7 +137,7 @@
                     servicesListContainer.appendChild(section);
                 }
             });
-             if (!contentFound) {
+            if (!contentFound) {
                 servicesListContainer.innerHTML = '<p class="text-center text-gray-500 p-8">Nenhum serviço pendente encontrado.</p>';
             }
         };
@@ -180,7 +183,7 @@
 
         const openCompleteModal = async (pedidoServicoId) => {
             serviceToCompleteId = pedidoServicoId;
-            if (seamstressSelect.options.length <= 1) { 
+            if (seamstressSelect.options.length <= 1) {
                 try {
                     const response = await fetch(`${API_URL}/seamstresses`);
                     if (!response.ok) throw new Error('Não foi possível carregar as costureiras.');
@@ -202,7 +205,7 @@
             seamstressSelect.selectedIndex = 0;
             completeModal.classList.add('hidden');
         };
-        
+
         const confirmCompletion = async () => {
             if (!seamstressSelect.value) return alert('Por favor, selecione o seu nome.');
             try {
@@ -221,20 +224,21 @@
                 alert(error.message);
             }
         };
-        
+
         const handleSearch = () => {
-            dateFilter.value = ''; 
+            dateFilter.value = '';
             fetchAndRenderServices();
         };
 
         dateFilter.addEventListener('change', () => {
-            searchInput.value = ''; 
+            searchInput.value = '';
             fetchAndRenderServices();
         });
         searchButton.addEventListener('click', handleSearch);
         searchInput.addEventListener('keyup', (e) => { if (e.key === 'Enter') handleSearch(); });
         modalCancelBtn.addEventListener('click', closeCompleteModal);
         modalConfirmBtn.addEventListener('click', confirmCompletion);
+
         document.addEventListener('DOMContentLoaded', () => {
             loadStats();
             fetchAndRenderServices();
@@ -242,4 +246,3 @@
     </script>
 </body>
 </html>
-
