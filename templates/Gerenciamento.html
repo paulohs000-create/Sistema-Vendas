@@ -90,7 +90,8 @@
     </div>
 
     <script>
-        const API_URL = "http://127.0.0.1:7000";
+        // Antes era fixo em localhost. Em Railway deve ser a mesma origem.
+        const API_URL = `${window.location.protocol}//${window.location.host}`;
 
         // --- Referências Globais ---
         const navServicesBtn = document.getElementById('nav-services');
@@ -133,7 +134,7 @@
             loadAndRenderSeamstresses();
         }
 
-        // --- Lógica de Serviços (adaptada) ---
+        // --- Lógica de Serviços ---
         function populateCategoryDropdown(categories) {
             serviceCategorySelect.innerHTML = '<option value="" disabled selected>Selecione uma categoria</option>';
             categories.forEach(category => {
@@ -183,6 +184,7 @@
                 servicesListContainer.innerHTML = `<p class="text-red-500">Erro de conexão. Verifique se o servidor está em execução.</p>`;
             }
         }
+
         function editService(id, name, category, price) {
             editingServiceId = id;
             formTitleService.textContent = 'Editar Serviço';
@@ -194,6 +196,7 @@
             cancelEditServiceButton.classList.remove('hidden');
             window.scrollTo(0, 0);
         }
+
         function cancelEditService() {
             editingServiceId = null;
             formTitleService.textContent = 'Adicionar Novo Serviço';
@@ -205,6 +208,7 @@
             actionServiceButton.textContent = 'Adicionar Serviço';
             cancelEditServiceButton.classList.add('hidden');
         }
+
         async function deleteService(id) {
             if (!confirm('Tem a certeza que deseja apagar este serviço?')) return;
             try {
@@ -213,6 +217,7 @@
                 await loadAndRenderServices();
             } catch (error) { alert(error.message); }
         }
+
         async function handleServiceFormAction() {
             let categoryValue = serviceCategorySelect.value;
             if (categoryValue === 'new-category') {
@@ -244,7 +249,7 @@
             } catch (error) { alert(error.message); }
         }
 
-        // --- Lógica de Costureiras (NOVA) ---
+        // --- Lógica de Costureiras ---
         async function loadAndRenderSeamstresses() {
             try {
                 const response = await fetch(`${API_URL}/seamstresses`);
@@ -270,6 +275,7 @@
                 seamstressesListContainer.innerHTML = `<p class="text-red-500">Erro de conexão.</p>`;
             }
         }
+
         function editSeamstress(id, name) {
             editingSeamstressId = id;
             formTitleSeamstress.textContent = 'Editar Costureira';
@@ -277,6 +283,7 @@
             actionSeamstressButton.textContent = 'Salvar Alterações';
             cancelEditSeamstressButton.classList.remove('hidden');
         }
+
         function cancelEditSeamstress() {
             editingSeamstressId = null;
             formTitleSeamstress.textContent = 'Adicionar Nova Costureira';
@@ -284,6 +291,7 @@
             actionSeamstressButton.textContent = 'Adicionar Costureira';
             cancelEditSeamstressButton.classList.add('hidden');
         }
+
         async function deleteSeamstress(id) {
             if (!confirm('Tem a certeza que deseja apagar esta costureira?')) return;
             try {
@@ -292,6 +300,7 @@
                 await loadAndRenderSeamstresses();
             } catch (error) { alert(error.message); }
         }
+
         async function handleSeamstressFormAction() {
             const seamstressData = { name: seamstressNameInput.value.trim() };
             if (!seamstressData.name) {
