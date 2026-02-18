@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ponto & Linha - Gestão</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f3f1;
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8">
+
+    <div class="max-w-6xl mx-auto">
+        <header class="text-center mb-10">
+            <h1 class="text-3xl sm:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600">
+                Painel de Gestão
+            </h1>
+            <p class="text-gray-500 mt-2">Adicione, edite ou remova informações do sistema.</p>
+        </header>
+
+        <div class="flex flex-col md:flex-row gap-8">
+            <!-- Menu Lateral -->
+            <aside class="w-full md:w-1/4">
+                <div class="bg-white p-4 rounded-2xl shadow-lg">
+                    <h2 class="text-lg font-semibold text-gray-800 mb-4 border-b pb-2">Menu</h2>
+                    <nav class="space-y-2">
+                        <button id="nav-services" class="w-full text-left font-semibold bg-purple-100 text-purple-800 py-2 px-4 rounded-lg">Gerir Serviços</button>
+                        <button id="nav-seamstresses" class="w-full text-left font-semibold text-gray-600 hover:bg-gray-100 py-2 px-4 rounded-lg">Gerir Costureiras</button>
+                    </nav>
+                </div>
+            </aside>
+
+            <!-- Conteúdo Principal -->
+            <main class="w-full md:w-3/4">
+                <!-- Seção de Gestão de Serviços (Visível por padrão) -->
+                <div id="services-management-section">
+                    <div class="bg-white p-6 rounded-2xl shadow-lg mb-8">
+                        <h2 id="form-title-service" class="text-2xl font-semibold text-gray-800 mb-4">Adicionar Novo Serviço</h2>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                                <label for="service-name" class="block text-gray-700 font-medium mb-1">Nome do Serviço</label>
+                                <input type="text" id="service-name" placeholder="Ex: Bainha de Calça" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                            </div>
+                            <div>
+                                <label for="service-category-select" class="block text-gray-700 font-medium mb-1">Categoria</label>
+                                <select id="service-category-select" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500"></select>
+                                <input type="text" id="new-category-input" placeholder="Nome da Nova Categoria" class="w-full px-4 py-2 mt-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500 hidden">
+                            </div>
+                            <div>
+                                <label for="service-price" class="block text-gray-700 font-medium mb-1">Preço (€)</label>
+                                <input type="number" id="service-price" placeholder="0.00" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                            </div>
+                        </div>
+                        <div class="mt-4 flex justify-end space-x-2">
+                            <button id="cancel-edit-service-button" class="bg-gray-300 text-gray-700 py-2 px-6 rounded-full font-semibold hover:bg-gray-400 transition-colors hidden">Cancelar</button>
+                            <button id="action-service-button" class="bg-purple-600 text-white py-2 px-6 rounded-full font-semibold hover:bg-purple-700 transition-colors">Adicionar Serviço</button>
+                        </div>
+                    </div>
+                    <div class="bg-white p-6 rounded-2xl shadow-lg">
+                        <h2 class="text-2xl font-semibold text-gray-800 mb-4">Serviços Existentes</h2>
+                        <div id="services-list-container" class="space-y-6"><p>A carregar serviços...</p></div>
+                    </div>
+                </div>
+
+                <!-- Seção de Gestão de Costureiras (Escondida por padrão) -->
+                <div id="seamstress-management-section" class="hidden">
+                    <div class="bg-white p-6 rounded-2xl shadow-lg mb-8">
+                        <h2 id="form-title-seamstress" class="text-2xl font-semibold text-gray-800 mb-4">Adicionar Nova Costureira</h2>
+                        <div>
+                            <label for="seamstress-name" class="block text-gray-700 font-medium mb-1">Nome da Costureira</label>
+                            <input type="text" id="seamstress-name" placeholder="Ex: Maria Silva" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                        </div>
+                        <div class="mt-4 flex justify-end space-x-2">
+                            <button id="cancel-edit-seamstress-button" class="bg-gray-300 text-gray-700 py-2 px-6 rounded-full font-semibold hover:bg-gray-400 transition-colors hidden">Cancelar</button>
+                            <button id="action-seamstress-button" class="bg-purple-600 text-white py-2 px-6 rounded-full font-semibold hover:bg-purple-700 transition-colors">Adicionar Costureira</button>
+                        </div>
+                    </div>
+                    <div class="bg-white p-6 rounded-2xl shadow-lg">
+                        <h2 class="text-2xl font-semibold text-gray-800 mb-4">Costureiras Registadas</h2>
+                        <div id="seamstresses-list-container" class="space-y-2"><p>A carregar costureiras...</p></div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = "http://127.0.0.1:7000";
+
+        // --- Referências Globais ---
+        const navServicesBtn = document.getElementById('nav-services');
+        const navSeamstressesBtn = document.getElementById('nav-seamstresses');
+        const servicesSection = document.getElementById('services-management-section');
+        const seamstressSection = document.getElementById('seamstress-management-section');
+
+        // --- Referências de Serviços ---
+        const servicesListContainer = document.getElementById('services-list-container');
+        const formTitleService = document.getElementById('form-title-service');
+        const serviceNameInput = document.getElementById('service-name');
+        const serviceCategorySelect = document.getElementById('service-category-select');
+        const newCategoryInput = document.getElementById('new-category-input');
+        const servicePriceInput = document.getElementById('service-price');
+        const actionServiceButton = document.getElementById('action-service-button');
+        const cancelEditServiceButton = document.getElementById('cancel-edit-service-button');
+        let editingServiceId = null;
+
+        // --- Referências de Costureiras ---
+        const seamstressesListContainer = document.getElementById('seamstresses-list-container');
+        const formTitleSeamstress = document.getElementById('form-title-seamstress');
+        const seamstressNameInput = document.getElementById('seamstress-name');
+        const actionSeamstressButton = document.getElementById('action-seamstress-button');
+        const cancelEditSeamstressButton = document.getElementById('cancel-edit-seamstress-button');
+        let editingSeamstressId = null;
+
+        // --- Lógica de Navegação ---
+        function showServicesView() {
+            seamstressSection.classList.add('hidden');
+            servicesSection.classList.remove('hidden');
+            navServicesBtn.classList.add('bg-purple-100', 'text-purple-800');
+            navSeamstressesBtn.classList.remove('bg-purple-100', 'text-purple-800');
+        }
+
+        function showSeamstressesView() {
+            servicesSection.classList.add('hidden');
+            seamstressSection.classList.remove('hidden');
+            navSeamstressesBtn.classList.add('bg-purple-100', 'text-purple-800');
+            navServicesBtn.classList.remove('bg-purple-100', 'text-purple-800');
+            loadAndRenderSeamstresses();
+        }
+
+        // --- Lógica de Serviços (adaptada) ---
+        function populateCategoryDropdown(categories) {
+            serviceCategorySelect.innerHTML = '<option value="" disabled selected>Selecione uma categoria</option>';
+            categories.forEach(category => {
+                const option = document.createElement('option');
+                option.value = category;
+                option.textContent = category;
+                serviceCategorySelect.appendChild(option);
+            });
+            serviceCategorySelect.innerHTML += '<option value="new-category" class="font-bold text-purple-600">--- Criar Nova Categoria ---</option>';
+        }
+
+        async function loadAndRenderServices() {
+            try {
+                const response = await fetch(`${API_URL}/services`);
+                if (!response.ok) throw new Error('Não foi possível carregar os serviços.');
+                const servicesByCategory = await response.json();
+                servicesListContainer.innerHTML = '';
+                const categories = Object.keys(servicesByCategory);
+                populateCategoryDropdown(categories);
+                if (categories.length === 0) {
+                    servicesListContainer.innerHTML = '<p>Ainda não há serviços cadastrados.</p>';
+                    return;
+                }
+                for (const category in servicesByCategory) {
+                    const categoryDiv = document.createElement('div');
+                    categoryDiv.innerHTML = `<h3 class="text-xl font-bold text-gray-700 border-b pb-2 mb-3">${category}</h3>`;
+                    const serviceListUl = document.createElement('ul');
+                    serviceListUl.className = 'space-y-2';
+                    servicesByCategory[category].forEach(service => {
+                        const li = document.createElement('li');
+                        li.className = 'flex items-center justify-between p-2 rounded-lg hover:bg-gray-50';
+                        li.innerHTML = `
+                            <div>
+                                <p class="font-semibold">${service.nome}</p>
+                                <p class="text-sm text-gray-600">€ ${service.preco.toFixed(2)}</p>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <button onclick='editService(${service.id}, "${service.nome}", "${category}", ${service.preco})' class="text-blue-500 hover:text-blue-700 text-sm font-bold">Editar</button>
+                                <button onclick='deleteService(${service.id})' class="text-red-500 hover:text-red-700 text-xl font-bold">&times;</button>
+                            </div>`;
+                        serviceListUl.appendChild(li);
+                    });
+                    categoryDiv.appendChild(serviceListUl);
+                    servicesListContainer.appendChild(categoryDiv);
+                }
+            } catch (error) {
+                servicesListContainer.innerHTML = `<p class="text-red-500">Erro de conexão. Verifique se o servidor está em execução.</p>`;
+            }
+        }
+        function editService(id, name, category, price) {
+            editingServiceId = id;
+            formTitleService.textContent = 'Editar Serviço';
+            serviceNameInput.value = name;
+            serviceCategorySelect.value = category;
+            newCategoryInput.classList.add('hidden');
+            servicePriceInput.value = price;
+            actionServiceButton.textContent = 'Salvar Alterações';
+            cancelEditServiceButton.classList.remove('hidden');
+            window.scrollTo(0, 0);
+        }
+        function cancelEditService() {
+            editingServiceId = null;
+            formTitleService.textContent = 'Adicionar Novo Serviço';
+            serviceNameInput.value = '';
+            serviceCategorySelect.selectedIndex = 0;
+            newCategoryInput.value = '';
+            newCategoryInput.classList.add('hidden');
+            servicePriceInput.value = '';
+            actionServiceButton.textContent = 'Adicionar Serviço';
+            cancelEditServiceButton.classList.add('hidden');
+        }
+        async function deleteService(id) {
+            if (!confirm('Tem a certeza que deseja apagar este serviço?')) return;
+            try {
+                const response = await fetch(`${API_URL}/services/${id}`, { method: 'DELETE' });
+                if (!response.ok) throw new Error('Falha ao apagar o serviço.');
+                await loadAndRenderServices();
+            } catch (error) { alert(error.message); }
+        }
+        async function handleServiceFormAction() {
+            let categoryValue = serviceCategorySelect.value;
+            if (categoryValue === 'new-category') {
+                categoryValue = newCategoryInput.value.trim();
+            }
+            const serviceData = {
+                name: serviceNameInput.value.trim(),
+                category: categoryValue,
+                price: servicePriceInput.value
+            };
+            if (!serviceData.name || !serviceData.category || !serviceData.price) {
+                alert('Todos os campos são obrigatórios.');
+                return;
+            }
+            const url = editingServiceId ? `${API_URL}/services/${editingServiceId}` : `${API_URL}/services`;
+            const method = editingServiceId ? 'PUT' : 'POST';
+            try {
+                const response = await fetch(url, {
+                    method: method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(serviceData)
+                });
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Ocorreu um erro.');
+                }
+                cancelEditService();
+                await loadAndRenderServices();
+            } catch (error) { alert(error.message); }
+        }
+
+        // --- Lógica de Costureiras (NOVA) ---
+        async function loadAndRenderSeamstresses() {
+            try {
+                const response = await fetch(`${API_URL}/seamstresses`);
+                if (!response.ok) throw new Error('Não foi possível carregar as costureiras.');
+                const seamstresses = await response.json();
+                seamstressesListContainer.innerHTML = '';
+                if (seamstresses.length === 0) {
+                    seamstressesListContainer.innerHTML = '<p>Nenhuma costureira registada.</p>';
+                    return;
+                }
+                seamstresses.forEach(s => {
+                    const li = document.createElement('li');
+                    li.className = 'flex items-center justify-between p-2 rounded-lg hover:bg-gray-50';
+                    li.innerHTML = `
+                        <p class="font-semibold">${s.name}</p>
+                        <div class="flex items-center space-x-2">
+                            <button onclick='editSeamstress(${s.id}, "${s.name}")' class="text-blue-500 hover:text-blue-700 text-sm font-bold">Editar</button>
+                            <button onclick='deleteSeamstress(${s.id})' class="text-red-500 hover:text-red-700 text-xl font-bold">&times;</button>
+                        </div>`;
+                    seamstressesListContainer.appendChild(li);
+                });
+            } catch (error) {
+                seamstressesListContainer.innerHTML = `<p class="text-red-500">Erro de conexão.</p>`;
+            }
+        }
+        function editSeamstress(id, name) {
+            editingSeamstressId = id;
+            formTitleSeamstress.textContent = 'Editar Costureira';
+            seamstressNameInput.value = name;
+            actionSeamstressButton.textContent = 'Salvar Alterações';
+            cancelEditSeamstressButton.classList.remove('hidden');
+        }
+        function cancelEditSeamstress() {
+            editingSeamstressId = null;
+            formTitleSeamstress.textContent = 'Adicionar Nova Costureira';
+            seamstressNameInput.value = '';
+            actionSeamstressButton.textContent = 'Adicionar Costureira';
+            cancelEditSeamstressButton.classList.add('hidden');
+        }
+        async function deleteSeamstress(id) {
+            if (!confirm('Tem a certeza que deseja apagar esta costureira?')) return;
+            try {
+                const response = await fetch(`${API_URL}/seamstresses/${id}`, { method: 'DELETE' });
+                if (!response.ok) throw new Error('Falha ao apagar a costureira.');
+                await loadAndRenderSeamstresses();
+            } catch (error) { alert(error.message); }
+        }
+        async function handleSeamstressFormAction() {
+            const seamstressData = { name: seamstressNameInput.value.trim() };
+            if (!seamstressData.name) {
+                alert('O nome da costureira é obrigatório.');
+                return;
+            }
+            const url = editingSeamstressId ? `${API_URL}/seamstresses/${editingSeamstressId}` : `${API_URL}/seamstresses`;
+            const method = editingSeamstressId ? 'PUT' : 'POST';
+            try {
+                const response = await fetch(url, {
+                    method: method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(seamstressData)
+                });
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Ocorreu um erro.');
+                }
+                cancelEditSeamstress();
+                await loadAndRenderSeamstresses();
+            } catch (error) { alert(error.message); }
+        }
+
+        // --- Eventos de Inicialização ---
+        navServicesBtn.addEventListener('click', showServicesView);
+        navSeamstressesBtn.addEventListener('click', showSeamstressesView);
+        
+        actionServiceButton.addEventListener('click', handleServiceFormAction);
+        cancelEditServiceButton.addEventListener('click', cancelEditService);
+        serviceCategorySelect.addEventListener('change', () => {
+            if (serviceCategorySelect.value === 'new-category') newCategoryInput.classList.remove('hidden');
+            else newCategoryInput.classList.add('hidden');
+        });
+        
+        actionSeamstressButton.addEventListener('click', handleSeamstressFormAction);
+        cancelEditSeamstressButton.addEventListener('click', cancelEditSeamstress);
+        
+        document.addEventListener('DOMContentLoaded', loadAndRenderServices);
+    </script>
+</body>
+</html>

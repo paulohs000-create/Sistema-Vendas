@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ponto & Linha - Painel Diário</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f7f3f1; }
+    </style>
+</head>
+<body class="p-4 sm:p-8">
+    <div class="max-w-7xl mx-auto">
+        <header class="text-center mb-10">
+            <h1 class="text-3xl sm:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600">
+                Painel Diário da Costureira
+            </h1>
+            <p class="text-gray-500 mt-2">Visualize os serviços pendentes e o seu progresso.</p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-8 mb-8">
+            <div class="lg:col-span-1 space-y-6">
+                <div class="bg-white p-6 rounded-2xl shadow-lg">
+                    <label for="date-filter" class="block text-gray-700 font-bold mb-2 text-lg">Filtrar por Data</label>
+                    <input type="date" id="date-filter" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                </div>
+                <div class="bg-white p-6 rounded-2xl shadow-lg">
+                    <label for="search-input" class="block text-gray-700 font-bold mb-2 text-lg">Buscar Pedido</label>
+                    <div class="flex space-x-2">
+                        <input type="text" id="search-input" placeholder="Nome ou Nº do Pedido" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                        <button id="search-button" class="bg-indigo-600 text-white px-4 rounded-lg font-semibold hover:bg-indigo-700 transition-colors">Ir</button>
+                    </div>
+                </div>
+                <div class="bg-red-100 border border-red-200 p-6 rounded-2xl shadow-lg text-center">
+                    <h3 class="text-lg font-semibold text-red-700">Pendentes Hoje</h3>
+                    <p id="pending-count" class="text-5xl font-bold text-red-600">0</p>
+                </div>
+                <div class="bg-green-100 border border-green-200 p-6 rounded-2xl shadow-lg text-center">
+                    <h3 class="text-lg font-semibold text-green-700">Concluídos Hoje</h3>
+                    <p id="completed-count" class="text-5xl font-bold text-green-600">0</p>
+                </div>
+            </div>
+
+            <div id="services-main-panel" class="lg:col-span-3 bg-white p-6 rounded-2xl shadow-lg">
+                <div id="services-list-container" class="space-y-6">
+                    <!-- Conteúdo dinâmico -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal para Concluir Serviço -->
+    <div id="complete-service-modal" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center p-4 z-50 hidden">
+        <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md space-y-6">
+            <h3 class="text-2xl font-semibold text-gray-800 text-center">Concluir Serviço</h3>
+            <p class="text-center">Selecione o seu nome para registar a conclusão.</p>
+            <div>
+                <label for="seamstress-select" class="block text-gray-700 font-medium mb-1">Costureira</label>
+                <select id="seamstress-select" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500"></select>
+            </div>
+            <div class="flex justify-end space-x-4">
+                <button id="modal-cancel-button" class="bg-gray-300 text-gray-700 py-2 px-6 rounded-full font-semibold hover:bg-gray-400">Cancelar</button>
+                <button id="modal-confirm-button" class="bg-purple-600 text-white py-2 px-6 rounded-full font-semibold hover:bg-purple-700">Confirmar</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = "http://127.0.0.1:7000";
+        const dateFilter = document.getElementById('date-filter');
+        const searchInput = document.getElementById('search-input');
+        const searchButton = document.getElementById('search-button');
+        const pendingCountEl = document.getElementById('pending-count');
+        const completedCountEl = document.getElementById('completed-count');
+        const servicesListContainer = document.getElementById('services-list-container');
+        const completeModal = document.getElementById('complete-service-modal');
+        const seamstressSelect = document.getElementById('seamstress-select');
+        const modalCancelBtn = document.getElementById('modal-cancel-button');
+        const modalConfirmBtn = document.getElementById('modal-confirm-button');
+        let serviceToCompleteId = null;
+        
+        const loadStats = async () => {
+            try {
+                const response = await fetch(`${API_URL}/pedidos/stats`);
+                if (!response.ok) throw new Error('Erro ao carregar estatísticas.');
+                const stats = await response.json();
+                pendingCountEl.textContent = stats.pending_today;
+                completedCountEl.textContent = stats.completed_today;
+            } catch (error) { console.error(error); }
+        };
+
+        const fetchAndRenderServices = async () => {
+            const selectedDate = dateFilter.value;
+            const searchTerm = searchInput.value.trim();
+            const url = new URL(`${API_URL}/pedidos/pendentes`);
+            
+            if (selectedDate) url.searchParams.append('date', selectedDate);
+            if (searchTerm) url.searchParams.append('search', searchTerm);
+
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Não foi possível carregar os serviços.');
+                
+                if (searchTerm) {
+                    renderServiceList(data, `Resultados da Busca`);
+                } else if (selectedDate) {
+                    // A API já retorna uma lista simples quando a data é especificada
+                    renderServiceList(data, `Serviços para ${new Date(selectedDate + 'T00:00:00').toLocaleDateString('pt-PT')}`);
+                } else {
+                    renderCategorizedLists(data);
+                }
+            } catch (error) {
+                console.error(error);
+                servicesListContainer.innerHTML = `<p class="text-red-500 p-4 text-center">${error.message}</p>`;
+            }
+        };
+
+        const renderCategorizedLists = (data) => {
+            servicesListContainer.innerHTML = '';
+            const categories = [
+                { title: 'Atrasados', data: data.atrasados, color: 'red' },
+                { title: 'Para Entregar Hoje', data: data.hoje, color: 'blue' },
+                { title: 'Próximos Serviços', data: data.proximos, color: 'gray' }
+            ];
+            let contentFound = false;
+            categories.forEach(cat => {
+                if(cat.data && cat.data.length > 0) {
+                    contentFound = true;
+                    const section = document.createElement('div');
+                    section.innerHTML = `<h3 class="text-xl font-bold text-${cat.color}-600 border-b-2 border-${cat.color}-200 pb-2 mb-4">${cat.title}</h3>`;
+                    cat.data.forEach(service => section.appendChild(createServiceCard(service)));
+                    servicesListContainer.appendChild(section);
+                }
+            });
+             if (!contentFound) {
+                servicesListContainer.innerHTML = '<p class="text-center text-gray-500 p-8">Nenhum serviço pendente encontrado.</p>';
+            }
+        };
+
+        const renderServiceList = (services, title) => {
+            servicesListContainer.innerHTML = `<h3 class="text-xl font-bold text-gray-700 pb-2 mb-4">${title}</h3>`;
+            if (!services || services.length === 0) {
+                servicesListContainer.innerHTML += '<p class="text-center text-gray-500 p-8">Nenhum serviço encontrado para esta busca.</p>';
+                return;
+            }
+            services.forEach(service => servicesListContainer.appendChild(createServiceCard(service)));
+        };
+
+        const createServiceCard = (service) => {
+            const card = document.createElement('div');
+            const isCompleted = service.status === 'Concluído';
+            const cardBg = isCompleted ? 'bg-green-50' : 'bg-gray-50';
+            card.className = `${cardBg} p-4 rounded-lg shadow-md border`;
+
+            let actionHtml = '';
+            if (isCompleted) {
+                actionHtml = `
+                    <div class="text-right text-green-600 mt-4 sm:mt-0 text-sm">
+                        <p class="font-bold text-base">Concluído</p>
+                        <p>por <strong>${service.costureira_conclusao || 'N/A'}</strong></p>
+                        <p>em ${service.data_conclusao || 'N/D'}</p>
+                    </div>`;
+            } else {
+                actionHtml = `<div class="mt-4 sm:mt-0"><button onclick="openCompleteModal(${service.id_pedido_servico})" class="bg-green-500 text-white py-2 px-4 rounded-full font-semibold hover:bg-green-600 transition-colors">Concluir</button></div>`;
+            }
+
+            card.innerHTML = `
+                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center">
+                    <div>
+                        <p class="text-lg font-bold text-purple-700">${service.service_name}</p>
+                        <p class="text-sm text-gray-600"><strong>Cliente:</strong> ${service.client_name}</p>
+                        <p class="text-sm text-gray-600"><strong>Pedido #${service.id_pedido}</strong> - ${service.quantity}x | <strong>Entrega:</strong> ${service.data_prevista || 'N/D'}</p>
+                    </div>
+                    ${actionHtml}
+                </div>`;
+            return card;
+        };
+
+        const openCompleteModal = async (pedidoServicoId) => {
+            serviceToCompleteId = pedidoServicoId;
+            if (seamstressSelect.options.length <= 1) { 
+                try {
+                    const response = await fetch(`${API_URL}/seamstresses`);
+                    if (!response.ok) throw new Error('Não foi possível carregar as costureiras.');
+                    const seamstresses = await response.json();
+                    seamstressSelect.innerHTML = '<option value="">Selecione o seu nome...</option>';
+                    seamstresses.forEach(s => {
+                        const option = document.createElement('option');
+                        option.value = s.id;
+                        option.textContent = s.name;
+                        seamstressSelect.appendChild(option);
+                    });
+                } catch (error) { console.error(error); }
+            }
+            completeModal.classList.remove('hidden');
+        };
+
+        const closeCompleteModal = () => {
+            serviceToCompleteId = null;
+            seamstressSelect.selectedIndex = 0;
+            completeModal.classList.add('hidden');
+        };
+        
+        const confirmCompletion = async () => {
+            if (!seamstressSelect.value) return alert('Por favor, selecione o seu nome.');
+            try {
+                const response = await fetch(`${API_URL}/pedidos/servico/${serviceToCompleteId}/concluir`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id_seamstress: seamstressSelect.value })
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Falha ao atualizar o serviço.');
+                closeCompleteModal();
+                await fetchAndRenderServices();
+                await loadStats();
+            } catch (error) {
+                console.error(error);
+                alert(error.message);
+            }
+        };
+        
+        const handleSearch = () => {
+            dateFilter.value = ''; 
+            fetchAndRenderServices();
+        };
+
+        dateFilter.addEventListener('change', () => {
+            searchInput.value = ''; 
+            fetchAndRenderServices();
+        });
+        searchButton.addEventListener('click', handleSearch);
+        searchInput.addEventListener('keyup', (e) => { if (e.key === 'Enter') handleSearch(); });
+        modalCancelBtn.addEventListener('click', closeCompleteModal);
+        modalConfirmBtn.addEventListener('click', confirmCompletion);
+        document.addEventListener('DOMContentLoaded', () => {
+            loadStats();
+            fetchAndRenderServices();
+        });
+    </script>
+</body>
+</html>
+
