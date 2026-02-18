@@ -1,9 +1,9 @@
 import os
-from datetime import datetime
+from datetime import date, datetime
 
 import psycopg
 from psycopg.rows import dict_row
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 
 app = Flask(__name__)
 
@@ -16,8 +16,26 @@ def get_db_connection():
     return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 
 
+def fmt_date(d):
+    if not d:
+        return None
+    try:
+        return d.strftime("%d/%m/%Y")
+    except Exception:
+        return str(d)
+
+
+def fmt_datetime(dt):
+    if not dt:
+        return None
+    try:
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(dt)
+
+
 # -----------------------------------------------------------------------------
-# PÁGINAS (FRONT)
+# PÁGINAS
 # -----------------------------------------------------------------------------
 @app.get("/")
 def atendimento_page():
@@ -26,7 +44,6 @@ def atendimento_page():
 
 @app.get("/gerenciamento")
 def gerenciamento_page():
-    # arquivo existe como templates/Gerenciamento.html (com G maiúsculo)
     return render_template("Gerenciamento.html")
 
 
@@ -56,24 +73,15 @@ def db_test():
         conn.close()
 
 
-@app.get("/schema/tables")
-def schema_tables():
-    conn = get_db_connection()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT table_name
-                    FROM information_schema.tables
-                    WHERE table_schema = 'public'
-                    ORDER BY table_name;
-                    """
-                )
-                rows = cur.fetchall()
-        return jsonify(rows)
-    finally:
-        conn.close()
+@app.get("/routes")
+def list_routes():
+    """Ajuda a conferir o que está em produção."""
+    routes = []
+    for rule in app.url_map.iter_rules():
+        if rule.endpoint != "static":
+            routes.append({"path": str(rule), "methods": sorted(list(rule.methods))})
+    routes.sort(key=lambda x: x["path"])
+    return jsonify(routes)
 
 
 # -----------------------------------------------------------------------------
@@ -148,8 +156,7 @@ def update_client_nif(client_id: int):
 
 
 # -----------------------------------------------------------------------------
-# SERVICES (SERVIÇOS + CATEGORIAS)
-# Tabela: services(id_service, name, description, price, category, id_seamstress)
+# SERVICES (para atendimento)
 # -----------------------------------------------------------------------------
 @app.get("/services")
 def get_services_grouped():
@@ -185,133 +192,11 @@ def get_services_grouped():
         conn.close()
 
 
-@app.get("/services/categories")
-def get_service_categories():
-    conn = get_db_connection()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT DISTINCT category
-                    FROM services
-                    WHERE category IS NOT NULL AND category <> ''
-                    ORDER BY category
-                    """
-                )
-                rows = cur.fetchall()
-        return jsonify([r["category"] for r in rows])
-    finally:
-        conn.close()
-
-
-@app.post("/services")
-def create_service():
-    """
-    Cria um serviço (para o Gerenciamento).
-    Espera JSON:
-    {
-      "name": "...",
-      "price": 10.0,
-      "category": "Barras",
-      "description": "opcional"
-    }
-    """
-    data = request.json or {}
-    name = (data.get("name") or "").strip()
-    category = (data.get("category") or "").strip()
-    description = (data.get("description") or "").strip() or None
-    price = data.get("price")
-
-    if not name or not category:
-        return jsonify({"error": "Campos obrigatórios: name, category"}), 400
-    if price is None:
-        return jsonify({"error": "Campo obrigatório: price"}), 400
-
-    try:
-        price_val = float(price)
-    except Exception:
-        return jsonify({"error": "price inválido"}), 400
-
-    conn = get_db_connection()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO services (name, description, price, category)
-                    VALUES (%s, %s, %s, %s)
-                    RETURNING id_service
-                    """,
-                    (name, description, price_val, category),
-                )
-                new_id = cur.fetchone()["id_service"]
-        return jsonify({"id_service": new_id}), 201
-    finally:
-        conn.close()
-
-
 # -----------------------------------------------------------------------------
-# PRODUCTS (se você usar produtos do PDV)
-# Tabela: products(id_product, name, description, sale_price, stock)
-# -----------------------------------------------------------------------------
-@app.get("/products")
-def list_products():
-    conn = get_db_connection()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id_product, name, description, sale_price, stock
-                    FROM products
-                    ORDER BY name
-                    """
-                )
-                rows = cur.fetchall()
-        return jsonify(rows)
-    finally:
-        conn.close()
-
-
-@app.post("/products")
-def create_product():
-    data = request.json or {}
-    name = (data.get("name") or "").strip()
-    description = (data.get("description") or "").strip() or None
-    sale_price = data.get("sale_price")
-    stock = data.get("stock")
-
-    if not name or sale_price is None or stock is None:
-        return jsonify({"error": "Campos obrigatórios: name, sale_price, stock"}), 400
-
-    try:
-        sale_price_val = float(sale_price)
-        stock_val = int(stock)
-    except Exception:
-        return jsonify({"error": "sale_price/stock inválidos"}), 400
-
-    conn = get_db_connection()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO products (name, description, sale_price, stock)
-                    VALUES (%s, %s, %s, %s)
-                    RETURNING id_product
-                    """,
-                    (name, description, sale_price_val, stock_val),
-                )
-                new_id = cur.fetchone()["id_product"]
-        return jsonify({"id_product": new_id}), 201
-    finally:
-        conn.close()
-
-
-# -----------------------------------------------------------------------------
-# PEDIDOS (para o atendimento.html)
-# Tabela: pedidos + pedido_servicos
+# PEDIDOS (criação pelo atendimento)
+# Tabelas:
+# - pedidos(id_pedido, id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status)
+# - pedido_servicos(id_pedido_servico, id_pedido, id_service, quantity, description, status, id_seamstress_conclusao, data_conclusao)
 # -----------------------------------------------------------------------------
 @app.post("/pedidos")
 def create_pedido():
@@ -369,8 +254,206 @@ def create_pedido():
 
 
 # -----------------------------------------------------------------------------
-# MAIN
+# COSTUREIRAS - API do painel
 # -----------------------------------------------------------------------------
+@app.get("/seamstresses")
+def list_seamstresses():
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id_seamstress, name FROM seamstresses ORDER BY name;")
+                rows = cur.fetchall()
+        return jsonify([{"id": r["id_seamstress"], "name": r["name"]} for r in rows])
+    finally:
+        conn.close()
+
+
+@app.get("/pedidos/stats")
+def pedidos_stats():
+    conn = get_db_connection()
+    today = date.today()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                # Pendentes para entrega hoje (pela data_prevista do pedido)
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS pending_today
+                    FROM pedido_servicos ps
+                    JOIN pedidos p ON p.id_pedido = ps.id_pedido
+                    WHERE p.data_prevista = %s
+                      AND COALESCE(ps.status, '') <> 'Concluído'
+                    """,
+                    (today,),
+                )
+                pending_today = cur.fetchone()["pending_today"]
+
+                # Concluídos hoje (pela data_conclusao do serviço)
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS completed_today
+                    FROM pedido_servicos ps
+                    WHERE ps.status = 'Concluído'
+                      AND ps.data_conclusao::date = %s
+                    """,
+                    (today,),
+                )
+                completed_today = cur.fetchone()["completed_today"]
+
+        return jsonify({"pending_today": pending_today, "completed_today": completed_today})
+    finally:
+        conn.close()
+
+
+def _map_service_row(r):
+    return {
+        "id_pedido_servico": r["id_pedido_servico"],
+        "id_pedido": r["id_pedido"],
+        "service_name": r["service_name"],
+        "client_name": r["client_name"],
+        "quantity": r["quantity"],
+        "data_prevista": fmt_date(r["data_prevista"]),
+        "status": r["status"],
+        "costureira_conclusao": r["costureira_conclusao"],
+        "data_conclusao": fmt_datetime(r["data_conclusao"]),
+    }
+
+
+@app.get("/pedidos/pendentes")
+def pedidos_pendentes():
+    selected_date = (request.args.get("date") or "").strip()  # YYYY-MM-DD
+    search = (request.args.get("search") or "").strip()
+
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                base_sql = """
+                    SELECT
+                        ps.id_pedido_servico,
+                        ps.id_pedido,
+                        ps.quantity,
+                        ps.status,
+                        ps.data_conclusao,
+                        s.name AS service_name,
+                        c.name AS client_name,
+                        p.data_prevista,
+                        ss.name AS costureira_conclusao
+                    FROM pedido_servicos ps
+                    JOIN pedidos p ON p.id_pedido = ps.id_pedido
+                    JOIN clients c ON c.id_client = p.id_client
+                    JOIN services s ON s.id_service = ps.id_service
+                    LEFT JOIN seamstresses ss ON ss.id_seamstress = ps.id_seamstress_conclusao
+                """
+
+                # BUSCA (nome do cliente / nº pedido)
+                if search:
+                    if search.isdigit():
+                        cur.execute(
+                            base_sql + """
+                            WHERE (ps.id_pedido::text = %s OR c.name ILIKE %s)
+                            ORDER BY p.data_prevista ASC, ps.id_pedido DESC
+                            LIMIT 200
+                            """,
+                            (search, f"%{search}%"),
+                        )
+                    else:
+                        cur.execute(
+                            base_sql + """
+                            WHERE c.name ILIKE %s
+                            ORDER BY p.data_prevista ASC, ps.id_pedido DESC
+                            LIMIT 200
+                            """,
+                            (f"%{search}%",),
+                        )
+                    rows = cur.fetchall()
+                    return jsonify([_map_service_row(r) for r in rows])
+
+                # FILTRO POR DATA
+                if selected_date:
+                    cur.execute(
+                        base_sql + """
+                        WHERE p.data_prevista = %s
+                        ORDER BY p.data_prevista ASC, ps.id_pedido DESC
+                        LIMIT 500
+                        """,
+                        (selected_date,),
+                    )
+                    rows = cur.fetchall()
+                    return jsonify([_map_service_row(r) for r in rows])
+
+                # SEM FILTRO: ATRASADOS / HOJE / PRÓXIMOS
+                today = date.today()
+
+                cur.execute(
+                    base_sql + """
+                    WHERE p.data_prevista < %s
+                      AND COALESCE(ps.status, '') <> 'Concluído'
+                    ORDER BY p.data_prevista ASC, ps.id_pedido DESC
+                    LIMIT 500
+                    """,
+                    (today,),
+                )
+                atrasados = [_map_service_row(r) for r in cur.fetchall()]
+
+                cur.execute(
+                    base_sql + """
+                    WHERE p.data_prevista = %s
+                      AND COALESCE(ps.status, '') <> 'Concluído'
+                    ORDER BY ps.id_pedido DESC
+                    LIMIT 500
+                    """,
+                    (today,),
+                )
+                hoje = [_map_service_row(r) for r in cur.fetchall()]
+
+                cur.execute(
+                    base_sql + """
+                    WHERE p.data_prevista > %s
+                      AND COALESCE(ps.status, '') <> 'Concluído'
+                    ORDER BY p.data_prevista ASC, ps.id_pedido DESC
+                    LIMIT 500
+                    """,
+                    (today,),
+                )
+                proximos = [_map_service_row(r) for r in cur.fetchall()]
+
+                return jsonify({"atrasados": atrasados, "hoje": hoje, "proximos": proximos})
+    finally:
+        conn.close()
+
+
+@app.put("/pedidos/servico/<int:pedido_servico_id>/concluir")
+def concluir_pedido_servico(pedido_servico_id: int):
+    data = request.json or {}
+    id_seamstress = data.get("id_seamstress")
+
+    if not id_seamstress:
+        return jsonify({"error": "id_seamstress é obrigatório"}), 400
+
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE pedido_servicos
+                    SET status = 'Concluído',
+                        id_seamstress_conclusao = %s,
+                        data_conclusao = NOW()
+                    WHERE id_pedido_servico = %s
+                    """,
+                    (id_seamstress, pedido_servico_id),
+                )
+                if cur.rowcount == 0:
+                    return jsonify({"error": "Serviço do pedido não encontrado"}), 404
+
+        return jsonify({"message": "Serviço concluído com sucesso"}), 200
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
