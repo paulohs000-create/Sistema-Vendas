@@ -1,7 +1,7 @@
 import os
 from datetime import datetime
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -11,7 +11,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def get_db_connection():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL não definida. Configure em Railway > Variables.")
-    return psycopg2.connect(DATABASE_URL, sslmode=os.getenv("PGSSLMODE", "require"))
+    # psycopg v3 usa conninfo string diretamente (postgresql://...)
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 
 # -------------------------
 # HEALTH / DEBUG
@@ -25,7 +26,7 @@ def db_test():
     conn = get_db_connection()
     try:
         with conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            with conn.cursor() as cur:
                 cur.execute("SELECT now() AS server_time;")
                 row = cur.fetchone()
         return jsonify(row)
@@ -37,7 +38,7 @@ def schema_tables():
     conn = get_db_connection()
     try:
         with conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            with conn.cursor() as cur:
                 cur.execute("""
                     SELECT table_name
                     FROM information_schema.tables
@@ -57,7 +58,7 @@ def list_clients():
     conn = get_db_connection()
     try:
         with conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            with conn.cursor() as cur:
                 cur.execute("SELECT id_client, name, phone, nif FROM clients ORDER BY name;")
                 rows = cur.fetchall()
         return jsonify(rows)
@@ -79,7 +80,7 @@ def create_client():
                     VALUES (%s, %s, %s)
                     RETURNING id_client
                 """, (data["name"], data["phone"], data.get("nif")))
-                new_id = cur.fetchone()[0]
+                new_id = cur.fetchone()["id_client"]
         return jsonify({"id_client": new_id}), 201
     finally:
         conn.close()
@@ -92,7 +93,7 @@ def list_products():
     conn = get_db_connection()
     try:
         with conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            with conn.cursor() as cur:
                 cur.execute("""
                     SELECT id_product, name, description, sale_price, stock
                     FROM products
@@ -118,7 +119,7 @@ def create_product():
                     VALUES (%s, %s, %s, %s)
                     RETURNING id_product
                 """, (data["name"], data.get("description"), data["sale_price"], data["stock"]))
-                new_id = cur.fetchone()[0]
+                new_id = cur.fetchone()["id_product"]
         return jsonify({"id_product": new_id}), 201
     finally:
         conn.close()
@@ -136,15 +137,13 @@ def create_sale():
     try:
         with conn:
             with conn.cursor() as cur:
-                # cria venda
                 cur.execute("""
                     INSERT INTO sales (id_client, sale_date, total_sale)
                     VALUES (%s, %s, %s)
                     RETURNING id_sale
                 """, (data["id_client"], datetime.now(), data["total_sale"]))
-                id_sale = cur.fetchone()[0]
+                id_sale = cur.fetchone()["id_sale"]
 
-                # itens + baixa estoque
                 for item in data["items"]:
                     if item.get("id_product") is None or item.get("quantity") is None or item.get("unit_price") is None:
                         return jsonify({"error": "Cada item precisa: id_product, quantity, unit_price"}), 400
@@ -169,7 +168,7 @@ def list_sales():
     conn = get_db_connection()
     try:
         with conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            with conn.cursor() as cur:
                 cur.execute("""
                     SELECT s.id_sale, s.sale_date, s.total_sale, c.name AS client_name
                     FROM sales s
