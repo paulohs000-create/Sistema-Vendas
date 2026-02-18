@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sistema de Atendimento</title>
     <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- ✅ Mesmo método do teste: QZ Tray -->
+    <script src="https://cdn.jsdelivr.net/npm/qz-tray/qz-tray.js"></script>
+
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; background-color: #f7f3f1; }
@@ -93,6 +97,14 @@
              <div class="text-right border-t pt-4">
                  <p class="text-2xl font-bold text-gray-800">Total: <span id="summary-total-price" class="text-purple-600">€ 0.00</span></p>
              </div>
+
+             <!-- ✅ Controle simples do nome da impressora -->
+             <div class="space-y-2 border-t pt-4">
+                <label for="printer-name" class="block text-gray-700 font-medium mb-1">Nome da Impressora (QZ Tray)</label>
+                <input type="text" id="printer-name" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                <p class="text-xs text-gray-500">Ex.: POS-80 (use o mesmo nome do Windows)</p>
+             </div>
+
              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4">
                 <button id="add-another-service-button" class="w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors">Adicionar Outro Serviço</button>
                 <button id="finalize-order-button" class="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition-colors">Finalizar Pedido</button>
@@ -122,9 +134,9 @@
         // ✅ Railway/produção e local automaticamente
         const API_URL = window.location.origin;
 
-        // ✅ Servidor de impressão continua local (se você usa um print-agent no PC da loja)
-        const PRINT_SERVER_URL = "http://127.0.0.1:8080";
-        
+        // ✅ Impressora padrão (igual teste). Você pode mudar no input e ele salva em localStorage.
+        const PRINTER_DEFAULT = "POS-80";
+
         const mainApplication = document.getElementById('main-application');
         const clientSection = document.getElementById('client-section');
         const serviceSection = document.getElementById('service-section');
@@ -155,12 +167,125 @@
         const modalConfirmButton = document.getElementById('modal-confirm-button');
         const nifCheckbox = document.getElementById('nif-checkbox');
         const nifDetailsContainer = document.getElementById('nif-details-container');
+        const printerNameInput = document.getElementById('printer-name');
+
+        // Carrega nome da impressora salvo
+        printerNameInput.value = localStorage.getItem("printer_name") || PRINTER_DEFAULT;
+        printerNameInput.addEventListener("change", () => {
+            localStorage.setItem("printer_name", printerNameInput.value.trim() || PRINTER_DEFAULT);
+        });
         
         let allServicesData = {};
-        let currentClient = null; // agora terá id_client
+        let currentClient = null; // {id_client, name, phone, nif}
         let selectedServices = [];
         let currentServiceAction = null;
 
+        // ---------------------------------------------------------------------
+        // ✅ QZ TRAY - mesmo método do teste
+        // ---------------------------------------------------------------------
+        async function conectarQZ() {
+            if (typeof qz === "undefined") {
+                throw new Error("QZ Tray não carregou. Verifique internet/JS.");
+            }
+            if (!qz.websocket.isActive()) {
+                await qz.websocket.connect();
+            }
+        }
+
+        function padRight(text, width) {
+            const s = String(text);
+            if (s.length >= width) return s.slice(0, width);
+            return s + " ".repeat(width - s.length);
+        }
+
+        function moneyEUR(value) {
+            const n = Number(value || 0);
+            return n.toFixed(2) + "€";
+        }
+
+        function formatDateTimePT() {
+            return new Date().toLocaleString("pt-PT").replace(",", "");
+        }
+
+        function formatDatePT(yyyy_mm_dd) {
+            if (!yyyy_mm_dd) return "";
+            // input date vem "YYYY-MM-DD"
+            const d = new Date(yyyy_mm_dd + "T00:00:00");
+            return d.toLocaleDateString("pt-PT");
+        }
+
+        function buildReceiptLines({ via, pedido_id, clientName, clientNif, currentDate, deliveryDate, services, discount, totalPrice }) {
+            // ESC/POS raw (igual teste)
+            const lines = [];
+            lines.push('\x1B\x40'); // reset
+            lines.push('        SISTEMA VENDAS\n');
+            lines.push(padRight(`        ${via}\n`, 0));
+            lines.push('--------------------------\n');
+            if (pedido_id) lines.push(`Pedido: ${pedido_id}\n`);
+            lines.push('Data: ' + currentDate + '\n');
+            if (deliveryDate) lines.push('Entrega: ' + deliveryDate + '\n');
+            lines.push('--------------------------\n');
+            lines.push(`Cliente: ${clientName}\n`);
+            if (clientNif) lines.push(`NIF: ${clientNif}\n`);
+            lines.push('--------------------------\n');
+
+            // Itens: "Qtd x Nome" e total item na direita (simples)
+            // Como sua impressora é 58mm, mantemos linhas curtas.
+            services.forEach(s => {
+                const qty = s.quantity || 1;
+                const name = s.name || "";
+                const itemTotal = s.itemTotal || "0.00";
+                const left = `${qty}x ${name}`.slice(0, 16);
+                const right = moneyEUR(itemTotal);
+                const space = " ".repeat(Math.max(1, 26 - left.length - right.length));
+                lines.push(left + space + right + "\n");
+                if (s.description) {
+                    lines.push(("  " + s.description).slice(0, 26) + "\n");
+                }
+            });
+
+            lines.push('--------------------------\n');
+            if (Number(discount) > 0) {
+                const d = moneyEUR(discount);
+                const left = "Desconto";
+                const space = " ".repeat(Math.max(1, 26 - left.length - d.length));
+                lines.push(left + space + d + "\n");
+            }
+            const t = moneyEUR(totalPrice);
+            const leftT = "TOTAL:";
+            const spaceT = " ".repeat(Math.max(1, 26 - leftT.length - t.length));
+            lines.push(leftT + spaceT + t + "\n");
+
+            lines.push('\n');
+            lines.push('Obrigado!\n');
+            lines.push('\n\n\n\n');
+            return lines;
+        }
+
+        async function imprimirTermica(receiptData) {
+            const printerName = (printerNameInput.value.trim() || PRINTER_DEFAULT);
+
+            await conectarQZ();
+
+            // Mesmo do teste: config por nome da impressora
+            const config = qz.configs.create(printerName);
+
+            const dadosCliente = buildReceiptLines({ ...receiptData, via: "VIA CLIENTE" });
+            const dadosLoja = buildReceiptLines({ ...receiptData, via: "VIA LOJA" });
+
+            const payload = [
+                ...dadosCliente,
+                '\x1D\x56\x00', // corte 1ª via
+                ...dadosLoja,
+                '\x1D\x56\x00'  // corte 2ª via
+            ];
+
+            await qz.print(config, payload);
+        }
+
+        // ---------------------------------------------------------------------
+        // Fluxo do sistema
+        // ---------------------------------------------------------------------
         const handleClientSearch = async () => {
             const phone = telefoneInput.value.trim();
             clientDetailsInputDiv.classList.add('hidden');
@@ -178,7 +303,7 @@
                     clientInfoParagraph.className = 'text-blue-600 text-base font-semibold mt-3 h-6';
                     clientDetailsInputDiv.classList.remove('hidden');
                 } else if (response.ok) {
-                    currentClient = await response.json(); // {id_client, name, phone, nif}
+                    currentClient = await response.json();
                     clientInfoParagraph.innerHTML = `Cliente encontrado: <strong class="text-purple-700">${currentClient.name}</strong>`;
                     clientInfoParagraph.className = 'text-green-600 text-base font-semibold mt-3 h-6';
                     continueToServicesButton.classList.remove('hidden');
@@ -206,9 +331,7 @@
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || 'Erro ao cadastrar.');
 
-                // ✅ Ajuste: backend retorna id_client
                 currentClient = { id_client: result.id_client, name: name, phone: phone, nif: nif };
-
                 clientDetailsInputDiv.classList.add('hidden');
                 clientInfoParagraph.innerHTML = `Cliente cadastrado: <strong class="text-purple-700">${name}</strong>`;
                 clientInfoParagraph.className = 'text-green-600 text-base font-semibold mt-3 h-6';
@@ -301,7 +424,6 @@
             const nif = nifInput.value.trim();
             if (!nif) { feedbackEl.textContent = 'Por favor, insira o NIF.'; feedbackEl.className = 'text-red-500 text-sm h-4 mt-1'; return; }
             try {
-                // ✅ Ajuste: usar id_client
                 const response = await fetch(`${API_URL}/clients/${currentClient.id_client}/nif`, {
                     method: 'PUT', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ nif: nif })
@@ -367,18 +489,18 @@
             const comments = document.getElementById('order-comments').value;
             const discount = parseFloat(document.getElementById('discount-input').value) || 0;
             if (!deliveryDate) { alert('Por favor, selecione uma data de entrega prevista.'); return; }
+
             let subtotal = 0;
             selectedServices.forEach(s => { subtotal += s.preco * s.quantity; });
             const totalPrice = subtotal - discount;
 
             const orderData = {
-                // ✅ Ajuste: id_client
                 clientId: currentClient.id_client,
                 deliveryDate: deliveryDate,
                 comments: comments,
                 discount: discount,
                 totalPrice: totalPrice,
-                services: selectedServices.map(s => ({ 
+                services: selectedServices.map(s => ({
                     id: s.id,
                     quantity: s.quantity,
                     description: s.description,
@@ -394,41 +516,40 @@
                 });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || 'Não foi possível criar o pedido.');
-                
-                alert(`Pedido #${result.pedido_id} criado com sucesso! A imprimir...`);
 
+                // ✅ Monta o recibo e imprime via QZ Tray (mesmo método do teste)
                 const receiptData = {
                     pedido_id: result.pedido_id,
                     clientName: currentClient.name,
-                    clientNif: currentClient.nif,
-                    currentDate: new Date().toLocaleString('pt-PT').replace(',', ''),
-                    deliveryDate: new Date(orderData.deliveryDate + 'T00:00:00').toLocaleDateString('pt-PT'),
+                    clientNif: (nifCheckbox.checked ? (currentClient.nif || "") : ""),
+                    currentDate: formatDateTimePT(),
+                    deliveryDate: formatDatePT(orderData.deliveryDate),
                     services: selectedServices.map(s => ({
                         quantity: s.quantity,
                         name: s.nome,
                         description: s.description,
-                        itemTotal: (s.preco * s.quantity).toFixed(2)
+                        itemTotal: (s.preco * s.quantity)
                     })),
-                    discount: orderData.discount.toFixed(2),
-                    totalPrice: orderData.totalPrice.toFixed(2)
+                    discount: orderData.discount,
+                    totalPrice: orderData.totalPrice
                 };
-                
-                const printResponse = await fetch(`${PRINT_SERVER_URL}/print`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(receiptData)
-                });
 
-                if (!printResponse.ok) {
-                   const printError = await printResponse.json().catch(() => ({ error: "Falha desconhecida no print server" }));
-                   throw new Error(`Pedido guardado, mas falha ao imprimir: ${printError.error}`);
+                try {
+                    await imprimirTermica(receiptData);
+                    alert(`Pedido #${result.pedido_id} criado e impresso com sucesso!`);
+                    window.location.reload();
+                } catch (printErr) {
+                    console.error(printErr);
+                    alert(
+                        `Pedido #${result.pedido_id} criado, mas NÃO imprimiu.\n\n` +
+                        `Motivo: ${printErr.message}\n\n` +
+                        `Confirme: QZ Tray aberto e impressora "${printerNameInput.value}" correta.`
+                    );
                 }
-                
-                window.location.reload();
 
             } catch (error) {
                 console.error(error);
-                alert(`Erro: ${error.message}\n\nVerifique se o servidor de impressão está a ser executado.`);
+                alert(`Erro: ${error.message}`);
             }
         };
 
@@ -447,6 +568,11 @@
         finalizeOrderButton.addEventListener('click', finalizeOrder);
         nifCheckbox.addEventListener('change', updateNifDisplay);
         continueToServicesButton.addEventListener('click', loadServicesAndShowCategories);
+
+        // Tenta conectar no QZ assim que carregar (opcional)
+        window.addEventListener("load", async () => {
+            try { await conectarQZ(); } catch (e) { /* sem alert no load */ }
+        });
 
     </script>
 </body>
