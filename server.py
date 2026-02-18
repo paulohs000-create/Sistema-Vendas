@@ -3,7 +3,6 @@ from datetime import datetime
 
 import psycopg
 from psycopg.rows import dict_row
-
 from flask import Flask, request, jsonify, render_template
 
 app = Flask(__name__)
@@ -18,11 +17,10 @@ def get_db_connection():
 
 
 # -----------------------------------------------------------------------------
-# PÁGINA (FRONT)
+# FRONT
 # -----------------------------------------------------------------------------
 @app.get("/")
 def atendimento_page():
-    # Precisa existir: templates/atendimento.html
     return render_template("atendimento.html")
 
 
@@ -47,42 +45,9 @@ def db_test():
         conn.close()
 
 
-@app.get("/schema/tables")
-def schema_tables():
-    conn = get_db_connection()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT table_name
-                    FROM information_schema.tables
-                    WHERE table_schema = 'public'
-                    ORDER BY table_name;
-                    """
-                )
-                rows = cur.fetchall()
-        return jsonify(rows)
-    finally:
-        conn.close()
-
-
 # -----------------------------------------------------------------------------
-# CLIENTES
+# CLIENTS
 # -----------------------------------------------------------------------------
-@app.get("/clients")
-def list_clients():
-    conn = get_db_connection()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id_client, name, phone, nif FROM clients ORDER BY name;")
-                rows = cur.fetchall()
-        return jsonify(rows)
-    finally:
-        conn.close()
-
-
 @app.get("/clients/<phone>")
 def get_client_by_phone(phone: str):
     conn = get_db_connection()
@@ -104,7 +69,11 @@ def get_client_by_phone(phone: str):
 @app.post("/clients")
 def create_client():
     data = request.json or {}
-    if not data.get("name") or not data.get("phone"):
+    name = (data.get("name") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    nif = (data.get("nif") or "").strip() or None
+
+    if not name or not phone:
         return jsonify({"error": "Campos obrigatórios: name, phone"}), 400
 
     conn = get_db_connection()
@@ -117,7 +86,7 @@ def create_client():
                     VALUES (%s, %s, %s)
                     RETURNING id_client
                     """,
-                    (data["name"], data["phone"], data.get("nif")),
+                    (name, phone, nif),
                 )
                 new_id = cur.fetchone()["id_client"]
         return jsonify({"id_client": new_id}), 201
@@ -128,7 +97,7 @@ def create_client():
 @app.put("/clients/<int:client_id>/nif")
 def update_client_nif(client_id: int):
     data = request.json or {}
-    nif = data.get("nif")
+    nif = (data.get("nif") or "").strip()
     if not nif:
         return jsonify({"error": "Campo obrigatório: nif"}), 400
 
@@ -148,116 +117,97 @@ def update_client_nif(client_id: int):
 
 
 # -----------------------------------------------------------------------------
-# PRODUTOS
+# SERVICES (para o atendimento.html)
+# Retorna no formato: { "Categoria": [ {id, nome, preco}, ... ] }
 # -----------------------------------------------------------------------------
-@app.get("/products")
-def list_products():
+@app.get("/services")
+def get_services_grouped():
     conn = get_db_connection()
     try:
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id_product, name, description, sale_price, stock
-                    FROM products
-                    ORDER BY name;
+                    SELECT id_service, name, price, category
+                    FROM services
+                    ORDER BY category, name
                     """
                 )
                 rows = cur.fetchall()
-        return jsonify(rows)
-    finally:
-        conn.close()
 
+        grouped = {}
+        for r in rows:
+            cat = r["category"]
+            grouped.setdefault(cat, [])
+            grouped[cat].append(
+                {
+                    "id": r["id_service"],
+                    "nome": r["name"],
+                    "preco": float(r["price"]),
+                }
+            )
 
-@app.post("/products")
-def create_product():
-    data = request.json or {}
-    if not data.get("name") or data.get("sale_price") is None or data.get("stock") is None:
-        return jsonify({"error": "Campos obrigatórios: name, sale_price, stock"}), 400
-
-    conn = get_db_connection()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO products (name, description, sale_price, stock)
-                    VALUES (%s, %s, %s, %s)
-                    RETURNING id_product
-                    """,
-                    (data["name"], data.get("description"), data["sale_price"], data["stock"]),
-                )
-                new_id = cur.fetchone()["id_product"]
-        return jsonify({"id_product": new_id}), 201
+        return jsonify(grouped)
     finally:
         conn.close()
 
 
 # -----------------------------------------------------------------------------
-# VENDAS
+# PEDIDOS (para o atendimento.html)
 # -----------------------------------------------------------------------------
-@app.post("/sales")
-def create_sale():
+@app.post("/pedidos")
+def create_pedido():
     data = request.json or {}
-    if data.get("id_client") is None or data.get("total_sale") is None or not isinstance(data.get("items"), list):
-        return jsonify({"error": "Campos obrigatórios: id_client, total_sale, items(list)"}), 400
+
+    client_id = data.get("clientId")
+    delivery_date = data.get("deliveryDate")
+    comments = data.get("comments") or ""
+    discount = data.get("discount") if data.get("discount") is not None else 0
+    total_price = data.get("totalPrice")
+    services = data.get("services") or []
+
+    if client_id is None:
+        return jsonify({"error": "clientId é obrigatório"}), 400
+    if not delivery_date:
+        return jsonify({"error": "deliveryDate é obrigatório"}), 400
+    if total_price is None:
+        return jsonify({"error": "totalPrice é obrigatório"}), 400
+    if not isinstance(services, list) or len(services) == 0:
+        return jsonify({"error": "services deve ser uma lista com pelo menos 1 item"}), 400
 
     conn = get_db_connection()
     try:
         with conn:
             with conn.cursor() as cur:
+                # cria pedido
                 cur.execute(
                     """
-                    INSERT INTO sales (id_client, sale_date, total_sale)
-                    VALUES (%s, %s, %s)
-                    RETURNING id_sale
+                    INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status)
+                    VALUES (%s, NOW(), %s, %s, %s, %s, 'Pendente')
+                    RETURNING id_pedido
                     """,
-                    (data["id_client"], datetime.now(), data["total_sale"]),
+                    (client_id, delivery_date, comments, discount, total_price),
                 )
-                id_sale = cur.fetchone()["id_sale"]
+                pedido_id = cur.fetchone()["id_pedido"]
 
-                for item in data["items"]:
-                    if item.get("id_product") is None or item.get("quantity") is None or item.get("unit_price") is None:
-                        return jsonify({"error": "Cada item precisa: id_product, quantity, unit_price"}), 400
+                # itens do pedido
+                for s in services:
+                    service_id = s.get("id")
+                    quantity = s.get("quantity")
+                    description = s.get("description") or ""
+
+                    if service_id is None or quantity is None:
+                        return jsonify({"error": "Cada serviço precisa: id, quantity"}), 400
 
                     cur.execute(
                         """
-                        INSERT INTO sale_items (id_sale, id_product, quantity, unit_price)
-                        VALUES (%s, %s, %s, %s)
+                        INSERT INTO pedido_servicos (id_pedido, id_service, quantity, description, status)
+                        VALUES (%s, %s, %s, %s, 'Pendente')
                         """,
-                        (id_sale, item["id_product"], item["quantity"], item["unit_price"]),
+                        (pedido_id, service_id, quantity, description),
                     )
 
-                    cur.execute(
-                        """
-                        UPDATE products
-                        SET stock = stock - %s
-                        WHERE id_product = %s
-                        """,
-                        (item["quantity"], item["id_product"]),
-                    )
-
-        return jsonify({"id_sale": id_sale}), 201
-    finally:
-        conn.close()
-
-
-@app.get("/sales")
-def list_sales():
-    conn = get_db_connection()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT s.id_sale, s.sale_date, s.total_sale, c.name AS client_name
-                    FROM sales s
-                    JOIN clients c ON c.id_client = s.id_client
-                    ORDER BY s.sale_date DESC;
-                    """
-                )
-                rows = cur.fetchall()
-        return jsonify(rows)
+        return jsonify({"pedido_id": pedido_id}), 201
     finally:
         conn.close()
 
