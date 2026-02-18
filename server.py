@@ -1,12 +1,11 @@
 import os
-from datetime import date, datetime
+from datetime import date
 
 import psycopg
 from psycopg.rows import dict_row
 from flask import Flask, jsonify, render_template, request
 
 app = Flask(__name__)
-
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
@@ -14,6 +13,10 @@ def get_db_connection():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL não definida. Configure em Railway > Variables.")
     return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+
+
+def json_error(message: str, status: int = 400):
+    return jsonify({"error": message}), status
 
 
 def fmt_date(d):
@@ -75,7 +78,6 @@ def db_test():
 
 @app.get("/routes")
 def list_routes():
-    """Ajuda a conferir o que está em produção."""
     routes = []
     for rule in app.url_map.iter_rules():
         if rule.endpoint != "static":
@@ -113,7 +115,7 @@ def create_client():
     nif = (data.get("nif") or "").strip() or None
 
     if not name or not phone:
-        return jsonify({"error": "Campos obrigatórios: name, phone"}), 400
+        return json_error("Campos obrigatórios: name, phone", 400)
 
     conn = get_db_connection()
     try:
@@ -138,7 +140,7 @@ def update_client_nif(client_id: int):
     data = request.json or {}
     nif = (data.get("nif") or "").strip()
     if not nif:
-        return jsonify({"error": "Campo obrigatório: nif"}), 400
+        return json_error("Campo obrigatório: nif", 400)
 
     conn = get_db_connection()
     try:
@@ -149,14 +151,16 @@ def update_client_nif(client_id: int):
                     (nif, client_id),
                 )
                 if cur.rowcount == 0:
-                    return jsonify({"error": "Cliente não encontrado"}), 404
+                    return json_error("Cliente não encontrado", 404)
         return jsonify({"message": "NIF atualizado com sucesso"}), 200
     finally:
         conn.close()
 
 
 # -----------------------------------------------------------------------------
-# SERVICES (para atendimento)
+# SERVICES
+# - GET: retorna agrupado por categoria (para atendimento e gerenciamento)
+# - POST/PUT/DELETE: usado no gerenciamento
 # -----------------------------------------------------------------------------
 @app.get("/services")
 def get_services_grouped():
@@ -175,7 +179,7 @@ def get_services_grouped():
 
         grouped = {}
         for r in rows:
-            cat = r["category"]
+            cat = r["category"] or "Geral"
             grouped.setdefault(cat, [])
             grouped[cat].append(
                 {
@@ -183,7 +187,7 @@ def get_services_grouped():
                     "nome": r["name"],
                     "descricao": r["description"],
                     "preco": float(r["price"]),
-                    "categoria": r["category"],
+                    "categoria": cat,
                 }
             )
 
@@ -192,11 +196,99 @@ def get_services_grouped():
         conn.close()
 
 
+@app.post("/services")
+def create_service():
+    data = request.json or {}
+    name = (data.get("name") or "").strip()
+    category = (data.get("category") or "").strip() or "Geral"
+    price = data.get("price")
+
+    if not name:
+        return json_error("Campo obrigatório: name", 400)
+    if price in (None, ""):
+        return json_error("Campo obrigatório: price", 400)
+
+    try:
+        price_val = float(price)
+    except Exception:
+        return json_error("price inválido", 400)
+
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO services (name, category, price)
+                    VALUES (%s, %s, %s)
+                    RETURNING id_service
+                    """,
+                    (name, category, price_val),
+                )
+                new_id = cur.fetchone()["id_service"]
+        return jsonify({"id_service": new_id}), 201
+    finally:
+        conn.close()
+
+
+@app.put("/services/<int:service_id>")
+def update_service(service_id: int):
+    data = request.json or {}
+    name = (data.get("name") or "").strip()
+    category = (data.get("category") or "").strip() or "Geral"
+    price = data.get("price")
+
+    if not name:
+        return json_error("Campo obrigatório: name", 400)
+    if price in (None, ""):
+        return json_error("Campo obrigatório: price", 400)
+
+    try:
+        price_val = float(price)
+    except Exception:
+        return json_error("price inválido", 400)
+
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE services
+                    SET name = %s, category = %s, price = %s
+                    WHERE id_service = %s
+                    """,
+                    (name, category, price_val, service_id),
+                )
+                if cur.rowcount == 0:
+                    return json_error("Serviço não encontrado", 404)
+        return jsonify({"message": "Serviço atualizado"}), 200
+    finally:
+        conn.close()
+
+
+@app.delete("/services/<int:service_id>")
+def delete_service(service_id: int):
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute("DELETE FROM services WHERE id_service = %s", (service_id,))
+                except Exception as e:
+                    # provavel FK (pedido_servicos)
+                    return json_error("Não foi possível apagar: serviço já usado em pedidos.", 409)
+
+                if cur.rowcount == 0:
+                    return json_error("Serviço não encontrado", 404)
+
+        return jsonify({"message": "Serviço apagado"}), 200
+    finally:
+        conn.close()
+
+
 # -----------------------------------------------------------------------------
 # PEDIDOS (criação pelo atendimento)
-# Tabelas:
-# - pedidos(id_pedido, id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status)
-# - pedido_servicos(id_pedido_servico, id_pedido, id_service, quantity, description, status, id_seamstress_conclusao, data_conclusao)
 # -----------------------------------------------------------------------------
 @app.post("/pedidos")
 def create_pedido():
@@ -210,13 +302,13 @@ def create_pedido():
     services = data.get("services") or []
 
     if client_id is None:
-        return jsonify({"error": "clientId é obrigatório"}), 400
+        return json_error("clientId é obrigatório", 400)
     if not delivery_date:
-        return jsonify({"error": "deliveryDate é obrigatório"}), 400
+        return json_error("deliveryDate é obrigatório", 400)
     if total_price is None:
-        return jsonify({"error": "totalPrice é obrigatório"}), 400
+        return json_error("totalPrice é obrigatório", 400)
     if not isinstance(services, list) or len(services) == 0:
-        return jsonify({"error": "services deve ser uma lista com pelo menos 1 item"}), 400
+        return json_error("services deve ser uma lista com pelo menos 1 item", 400)
 
     conn = get_db_connection()
     try:
@@ -238,7 +330,7 @@ def create_pedido():
                     description = s.get("description") or ""
 
                     if service_id is None or quantity is None:
-                        return jsonify({"error": "Cada serviço precisa: id, quantity"}), 400
+                        return json_error("Cada serviço precisa: id, quantity", 400)
 
                     cur.execute(
                         """
@@ -254,7 +346,7 @@ def create_pedido():
 
 
 # -----------------------------------------------------------------------------
-# COSTUREIRAS - API do painel
+# SEAMSTRESSES (Costureiras) - CRUD para Gerenciamento e Painel
 # -----------------------------------------------------------------------------
 @app.get("/seamstresses")
 def list_seamstresses():
@@ -269,6 +361,71 @@ def list_seamstresses():
         conn.close()
 
 
+@app.post("/seamstresses")
+def create_seamstress():
+    data = request.json or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return json_error("Campo obrigatório: name", 400)
+
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO seamstresses (name) VALUES (%s) RETURNING id_seamstress",
+                    (name,),
+                )
+                new_id = cur.fetchone()["id_seamstress"]
+        return jsonify({"id_seamstress": new_id}), 201
+    finally:
+        conn.close()
+
+
+@app.put("/seamstresses/<int:seamstress_id>")
+def update_seamstress(seamstress_id: int):
+    data = request.json or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return json_error("Campo obrigatório: name", 400)
+
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE seamstresses SET name = %s WHERE id_seamstress = %s",
+                    (name, seamstress_id),
+                )
+                if cur.rowcount == 0:
+                    return json_error("Costureira não encontrada", 404)
+        return jsonify({"message": "Costureira atualizada"}), 200
+    finally:
+        conn.close()
+
+
+@app.delete("/seamstresses/<int:seamstress_id>")
+def delete_seamstress(seamstress_id: int):
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute("DELETE FROM seamstresses WHERE id_seamstress = %s", (seamstress_id,))
+                except Exception:
+                    return json_error("Não foi possível apagar: costureira já usada em serviços/pedidos.", 409)
+
+                if cur.rowcount == 0:
+                    return json_error("Costureira não encontrada", 404)
+
+        return jsonify({"message": "Costureira apagada"}), 200
+    finally:
+        conn.close()
+
+
+# -----------------------------------------------------------------------------
+# API DO PAINEL DAS COSTUREIRAS
+# -----------------------------------------------------------------------------
 @app.get("/pedidos/stats")
 def pedidos_stats():
     conn = get_db_connection()
@@ -276,7 +433,6 @@ def pedidos_stats():
     try:
         with conn:
             with conn.cursor() as cur:
-                # Pendentes para entrega hoje (pela data_prevista do pedido)
                 cur.execute(
                     """
                     SELECT COUNT(*) AS pending_today
@@ -289,7 +445,6 @@ def pedidos_stats():
                 )
                 pending_today = cur.fetchone()["pending_today"]
 
-                # Concluídos hoje (pela data_conclusao do serviço)
                 cur.execute(
                     """
                     SELECT COUNT(*) AS completed_today
@@ -322,7 +477,7 @@ def _map_service_row(r):
 
 @app.get("/pedidos/pendentes")
 def pedidos_pendentes():
-    selected_date = (request.args.get("date") or "").strip()  # YYYY-MM-DD
+    selected_date = (request.args.get("date") or "").strip()
     search = (request.args.get("search") or "").strip()
 
     conn = get_db_connection()
@@ -347,7 +502,6 @@ def pedidos_pendentes():
                     LEFT JOIN seamstresses ss ON ss.id_seamstress = ps.id_seamstress_conclusao
                 """
 
-                # BUSCA (nome do cliente / nº pedido)
                 if search:
                     if search.isdigit():
                         cur.execute(
@@ -370,7 +524,6 @@ def pedidos_pendentes():
                     rows = cur.fetchall()
                     return jsonify([_map_service_row(r) for r in rows])
 
-                # FILTRO POR DATA
                 if selected_date:
                     cur.execute(
                         base_sql + """
@@ -383,7 +536,6 @@ def pedidos_pendentes():
                     rows = cur.fetchall()
                     return jsonify([_map_service_row(r) for r in rows])
 
-                # SEM FILTRO: ATRASADOS / HOJE / PRÓXIMOS
                 today = date.today()
 
                 cur.execute(
@@ -430,7 +582,7 @@ def concluir_pedido_servico(pedido_servico_id: int):
     id_seamstress = data.get("id_seamstress")
 
     if not id_seamstress:
-        return jsonify({"error": "id_seamstress é obrigatório"}), 400
+        return json_error("id_seamstress é obrigatório", 400)
 
     conn = get_db_connection()
     try:
@@ -447,8 +599,7 @@ def concluir_pedido_servico(pedido_servico_id: int):
                     (id_seamstress, pedido_servico_id),
                 )
                 if cur.rowcount == 0:
-                    return jsonify({"error": "Serviço do pedido não encontrado"}), 404
-
+                    return json_error("Serviço do pedido não encontrado", 404)
         return jsonify({"message": "Serviço concluído com sucesso"}), 200
     finally:
         conn.close()
