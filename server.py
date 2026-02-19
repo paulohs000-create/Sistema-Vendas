@@ -598,10 +598,6 @@ if __name__ == "__main__":
 
 @app.route("/debug-env")
 def debug_env():
-    return {
-        "ADMIN_USER": os.environ.get("ADMIN_USER"),
-        "CAIXA_USER": os.environ.get("CAIXA_USER"),
-        "COSTUREIRA_USER": os.environ.get("COSTUREIRA_USER"),
-    }
+    return 
 
 
