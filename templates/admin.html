@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Admin - Sistema de Vendas</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    body { font-family: 'Inter', sans-serif; background-color: #0b0f19; }
+  </style>
+</head>
+
+<body class="min-h-screen">
+  <div class="flex min-h-screen">
+
+    <!-- SIDEBAR -->
+    <aside class="w-72 bg-[#0f1629] text-white flex flex-col border-r border-white/10">
+      <div class="px-6 py-5 border-b border-white/10">
+        <div class="flex items-center gap-3">
+          <div class="h-10 w-10 rounded-xl bg-white/10 flex items-center justify-center font-bold">SV</div>
+          <div>
+            <div class="text-lg font-extrabold leading-tight">Sistema-Vendas</div>
+            <div class="text-xs text-white/60">Painel Admin</div>
+          </div>
+        </div>
+      </div>
+
+      <nav class="px-4 py-4 space-y-2">
+        <a href="/admin" class="block px-4 py-3 rounded-xl bg-white/10 hover:bg-white/15 transition">
+          🏠 Dashboard
+          <div class="text-xs text-white/60">Resumo do sistema</div>
+        </a>
+
+        <a href="/" class="block px-4 py-3 rounded-xl hover:bg-white/10 transition">
+          🧾 Atendimento (Caixa)
+          <div class="text-xs text-white/60">Criar pedidos</div>
+        </a>
+
+        <a href="/gerenciamento" class="block px-4 py-3 rounded-xl hover:bg-white/10 transition">
+          🧩 Gerenciamento
+          <div class="text-xs text-white/60">Serviços e costureiras</div>
+        </a>
+
+        <a href="/costureiras" class="block px-4 py-3 rounded-xl hover:bg-white/10 transition">
+          🧵 Painel Costureiras
+          <div class="text-xs text-white/60">Pendências e conclusão</div>
+        </a>
+
+        <div class="mt-4 pt-4 border-t border-white/10">
+          <a href="#" class="block px-4 py-3 rounded-xl hover:bg-white/10 transition opacity-60 cursor-not-allowed">
+            👤 Usuários (em breve)
+            <div class="text-xs text-white/60">Criar/editar/remover</div>
+          </a>
+
+          <a href="#" class="block px-4 py-3 rounded-xl hover:bg-white/10 transition opacity-60 cursor-not-allowed">
+            📊 Relatórios (em breve)
+            <div class="text-xs text-white/60">Vendas e produtividade</div>
+          </a>
+        </div>
+      </nav>
+
+      <div class="mt-auto px-4 py-4 border-t border-white/10">
+        <a href="/logout" class="block w-full text-center px-4 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 transition">
+          Sair
+        </a>
+      </div>
+    </aside>
+
+    <!-- MAIN -->
+    <main class="flex-1 p-8 bg-[#0b0f19]">
+      <div class="max-w-6xl mx-auto">
+
+        <div class="flex items-center justify-between">
+          <div>
+            <h1 class="text-3xl font-extrabold text-white">Dashboard</h1>
+            <p class="text-white/60 mt-1">Aqui vamos centralizar tudo do admin.</p>
+          </div>
+          <div class="text-white/60 text-sm">
+            Logado como: <span class="text-white font-semibold">{{ session.get('user') }}</span>
+          </div>
+        </div>
+
+        <!-- Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-8">
+
+          <a href="/gerenciamento" class="bg-white/5 hover:bg-white/10 transition border border-white/10 rounded-2xl p-6">
+            <div class="text-white text-xl font-bold">Gerenciamento</div>
+            <div class="text-white/60 mt-2">Cadastrar/editar serviços e costureiras</div>
+          </a>
+
+          <a href="/" class="bg-white/5 hover:bg-white/10 transition border border-white/10 rounded-2xl p-6">
+            <div class="text-white text-xl font-bold">Atendimento</div>
+            <div class="text-white/60 mt-2">Criar pedidos e imprimir talão</div>
+          </a>
+
+          <a href="/costureiras" class="bg-white/5 hover:bg-white/10 transition border border-white/10 rounded-2xl p-6">
+            <div class="text-white text-xl font-bold">Painel Costureiras</div>
+            <div class="text-white/60 mt-2">Acompanhar pendências e conclusões</div>
+          </a>
+
+        </div>
+
+        <!-- Área futura -->
+        <div class="mt-8 bg-white/5 border border-white/10 rounded-2xl p-6">
+          <h2 class="text-white text-xl font-bold">Próximos passos</h2>
+          <ul class="list-disc ml-6 text-white/70 mt-3 space-y-1">
+            <li>Dashboard com indicadores (pendentes hoje, atrasados, concluídos, faturamento)</li>
+            <li>Gestão de usuários (admin cria caixa/costureira, reseta senha, desativa)</li>
+            <li>Relatórios e exportação</li>
+          </ul>
+        </div>
+
+      </div>
+    </main>
+
+  </div>
+</body>
+</html>
