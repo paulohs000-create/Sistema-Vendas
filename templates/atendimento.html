@@ -128,9 +128,9 @@
         // ============================
         // CONFIG IMPRESSÃO (QZ)
         // ============================
-        const PRINTER_NAME = "POS-80";   // <-- Troque se necessário (nome exato da impressora no Windows)
+        const PRINTER_NAME = "POS-80";   // nome exato no Windows
         const VAT_RATE = 0.23;           // 23%
-        const PAPER_WIDTH_CHARS = 42;    // ajuste fino (80mm costuma 42~48, 58mm ~32)
+        const PAPER_WIDTH_CHARS = 42;    // 80mm costuma 42~48
 
         const STORE_INFO = {
             title1: "Ponto e Linha - Arranjos",
@@ -179,14 +179,16 @@
             const nowStr = receiptData.currentDate || new Date().toLocaleString("pt-PT").replace(",", "");
             const vencStr = receiptData.deliveryDate || "";
 
-            const docNumber = receiptData.documentNumber || ("OT " + String(receiptData.pedido_id).padStart(6, "0"));
-            const docType = receiptData.documentType || "Orcamento";
+            // ✅ ajuste: tipo vira FATURA
+            const docType = receiptData.documentType || "Fatura";
+
+            // ✅ ajuste: remover "OT" do número (imprime só o número)
+            const docNumber = receiptData.documentNumber || String(receiptData.pedido_id).padStart(6, "0");
 
             const clientNif = receiptData.clientNif ? receiptData.clientNif : "---------";
             const clientName = receiptData.clientName || "";
             const clientMorada = receiptData.clientAddressOrNotes || (receiptData.notes || "");
 
-            const discount = Number(receiptData.discount || 0);
             const total = Number(receiptData.totalPrice || 0);
 
             const base = total / (1 + VAT_RATE);
@@ -263,12 +265,8 @@
             out.push(line("-"));
             out.push("\n");
 
-            // ✅ FRASE QUE VOCÊ PEDIU (logo após o valor/IVA)
-            out.push(ALIGN_CENTER);
-            out.push("Este documento nao serve de fatura\n");
-            out.push("\n");
+            // ✅ ajuste: removemos a frase “Este documento nao serve de fatura”
 
-            // Via
             out.push(ALIGN_CENTER);
             out.push(viaLabel + "\n");
             out.push("\n\n\n");
@@ -495,22 +493,6 @@
             renderOrderSummary();
         };
 
-        const updateServiceInOrder = (index, quantity, description) => {
-            selectedServices[index].quantity = quantity;
-            selectedServices[index].description = description;
-            renderOrderSummary();
-        };
-
-        const removeService = (index) => {
-            selectedServices.splice(index, 1);
-            if (selectedServices.length === 0) { showCategories(); orderSummarySection.classList.add('hidden'); }
-            else { renderOrderSummary(); }
-        };
-
-        const editService = (index) => {
-            openServiceModal('edit', selectedServices[index], index);
-        };
-
         const openServiceModal = (action, service, index = null) => {
             currentServiceAction = { action, service, index };
             modalTitle.textContent = action === 'add' ? 'Adicionar Detalhes' : 'Editar Detalhes';
@@ -527,9 +509,8 @@
         const confirmServiceAction = () => {
             const quantity = parseInt(document.getElementById('service-quantity').value);
             const description = document.getElementById('service-description').value.trim();
-            const { action, service, index } = currentServiceAction;
+            const { action, service } = currentServiceAction;
             if (action === 'add') { addServiceToOrder(service, quantity, description); }
-            else if (action === 'edit') { updateServiceInOrder(index, quantity, description); }
             closeServiceModal();
         };
 
@@ -573,13 +554,11 @@
                 const currentDate = now.toLocaleString('pt-PT').replace(',', '');
                 const deliveryStr = new Date(orderData.deliveryDate + 'T00:00:00').toLocaleDateString('pt-PT');
 
-                const documentNumber = `OT ${String(result.pedido_id).padStart(6, "0")}`;
-                const documentType = "Orcamento";
-
+                // ✅ agora imprimimos como FATURA e sem OT
                 const receiptData = {
                     pedido_id: result.pedido_id,
-                    documentType,
-                    documentNumber,
+                    documentType: "Fatura",
+                    documentNumber: String(result.pedido_id).padStart(6, "0"),
                     currentDate: currentDate,
                     deliveryDate: deliveryStr,
                     clientName: currentClient.name,
