@@ -5,10 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sistema de Atendimento</title>
     <script src="https://cdn.tailwindcss.com"></script>
-
-    <!-- QZ Tray -->
-    <script src="https://cdn.jsdelivr.net/npm/qz-tray/qz-tray.js"></script>
-
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; background-color: #f7f3f1; }
@@ -16,93 +12,121 @@
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
-<body class="flex items-center justify-center min-h-screen p-4">
 
-    <div id="main-application" class="bg-white p-8 sm:p-10 rounded-2xl shadow-2xl w-full max-w-2xl space-y-8">
-        
-        <header id="main-header" class="text-center">
-            <h1 class="text-3xl sm:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600">
-                Sistema de Atendimento
-            </h1>
-            <p class="text-gray-500 mt-2">Localize o cliente e selecione o serviço</p>
-        </header>
-        
-        <div id="client-section" class="space-y-6 fade-in">
-            <h2 class="text-2xl font-semibold text-gray-800 border-b pb-3">1. Encontre o Cliente</h2>
-            <div>
-                <label for="telefone" class="block text-gray-700 font-medium mb-1">Telefone</label>
-                <div class="flex space-x-2">
-                    <input type="tel" id="telefone" placeholder="912 345 678" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
-                    <button id="search-client-button" class="bg-purple-600 text-white py-2 px-6 rounded-lg font-semibold hover:bg-purple-700 transition-colors">Buscar</button>
-                </div>
-                <p id="client-info" class="text-gray-600 text-base font-semibold mt-3 h-6"></p>
-            </div>
-            <div id="client-details-input" class="hidden space-y-4">
-                <div>
-                    <label for="nome-cliente" class="block text-gray-700 font-medium mb-1">Nome do Cliente</label>
-                    <input type="text" id="nome-cliente" placeholder="Digite o nome do cliente" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
-                </div>
-                <div>
-                    <label for="nif-cliente" class="block text-gray-700 font-medium mb-1">NIF (Opcional)</label>
-                    <input type="text" id="nif-cliente" placeholder="Ex: 999999999" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
-                </div>
-                 <button id="register-client-button" class="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors">Cadastrar Novo Cliente</button>
-            </div>
-            <button id="continue-to-services-button" class="hidden mt-4 w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition-colors">Seguinte</button>
-        </div>
+<!-- ALTERAÇÃO: antes era "flex items-center justify-center min-h-screen p-4"
+     Agora viramos uma coluna, com header em cima e o app centralizado abaixo -->
+<body class="min-h-screen flex flex-col">
 
-        <div id="service-section" class="space-y-6 hidden">
-            <div id="service-categories-container">
-                <h2 class="text-2xl font-semibold text-gray-800 border-b pb-3 mb-6">2. Selecione a Categoria</h2>
-                <div id="service-categories" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4"></div>
+    <!-- ✅ NOVO: Topbar com usuário e logout (não quebra nada do seu app) -->
+    <header class="w-full bg-white/90 backdrop-blur border-b border-gray-200">
+        <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+            <div class="flex flex-col">
+                <span class="text-sm font-semibold text-gray-800">Sistema de Atendimento</span>
+                <span class="text-xs text-gray-500">Sessão ativa</span>
             </div>
-            <div id="specific-services-container" class="hidden">
-                 <h2 id="specific-service-title" class="text-2xl font-semibold text-gray-800 border-b pb-3 mb-6">3. Selecione o Serviço</h2>
-                 <div id="specific-services" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4"></div>
-                <button id="back-to-categories-button" class="mt-6 w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors">Voltar para Categorias</button>
+
+            <div class="flex items-center gap-4">
+                <div class="text-sm text-gray-600">
+                    Logado como:
+                    <span class="font-semibold text-gray-900">{{ session.get('user') }}</span>
+                </div>
+
+                <a href="/logout"
+                   class="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-red-700 transition-colors">
+                    Sair
+                </a>
             </div>
         </div>
+    </header>
 
-        <div id="order-summary-section" class="space-y-6 hidden">
-             <h2 class="text-2xl font-semibold text-gray-800 border-b pb-3">4. Resumo do Pedido</h2>
-             <div class="bg-gray-50 p-4 rounded-lg">
-                 <p class="font-medium text-gray-600">Cliente:</p>
-                 <p id="summary-client-name" class="text-lg font-semibold text-purple-800"></p>
-             </div>
-             <div>
-                <h3 class="font-semibold text-gray-700 mb-2">Serviços Selecionados:</h3>
-                <div id="summary-services-list" class="space-y-3 max-h-60 overflow-y-auto pr-2"></div>
-             </div>
-             <div>
-                <label for="order-comments" class="block text-gray-700 font-medium mb-1">Observações Gerais do Pedido</label>
-                <textarea id="order-comments" rows="3" placeholder="Ex: Cliente pediu urgência, tecido delicado..." class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500"></textarea>
-            </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    <!-- ✅ Mantém seu layout centralizado -->
+    <main class="flex-1 flex items-center justify-center p-4">
+        <div id="main-application" class="bg-white p-8 sm:p-10 rounded-2xl shadow-2xl w-full max-w-2xl space-y-8">
+            
+            <header id="main-header" class="text-center">
+                <h1 class="text-3xl sm:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600">
+                    Sistema de Atendimento
+                </h1>
+                <p class="text-gray-500 mt-2">Localize o cliente e selecione o serviço</p>
+            </header>
+            
+            <div id="client-section" class="space-y-6 fade-in">
+                <h2 class="text-2xl font-semibold text-gray-800 border-b pb-3">1. Encontre o Cliente</h2>
                 <div>
-                    <label for="delivery-date" class="block text-gray-700 font-medium mb-1">Data de Entrega Prevista</label>
-                    <input type="date" id="delivery-date" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    <label for="telefone" class="block text-gray-700 font-medium mb-1">Telefone</label>
+                    <div class="flex space-x-2">
+                        <input type="tel" id="telefone" placeholder="912 345 678" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                        <button id="search-client-button" class="bg-purple-600 text-white py-2 px-6 rounded-lg font-semibold hover:bg-purple-700 transition-colors">Buscar</button>
+                    </div>
+                    <p id="client-info" class="text-gray-600 text-base font-semibold mt-3 h-6"></p>
                 </div>
+                <div id="client-details-input" class="hidden space-y-4">
+                    <div>
+                        <label for="nome-cliente" class="block text-gray-700 font-medium mb-1">Nome do Cliente</label>
+                        <input type="text" id="nome-cliente" placeholder="Digite o nome do cliente" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    </div>
+                    <div>
+                        <label for="nif-cliente" class="block text-gray-700 font-medium mb-1">NIF (Opcional)</label>
+                        <input type="text" id="nif-cliente" placeholder="Ex: 999999999" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    </div>
+                     <button id="register-client-button" class="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors">Cadastrar Novo Cliente</button>
+                </div>
+                <button id="continue-to-services-button" class="hidden mt-4 w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition-colors">Seguinte</button>
+            </div>
+
+            <div id="service-section" class="space-y-6 hidden">
+                <div id="service-categories-container">
+                    <h2 class="text-2xl font-semibold text-gray-800 border-b pb-3 mb-6">2. Selecione a Categoria</h2>
+                    <div id="service-categories" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4"></div>
+                </div>
+                <div id="specific-services-container" class="hidden">
+                     <h2 id="specific-service-title" class="text-2xl font-semibold text-gray-800 border-b pb-3 mb-6">3. Selecione o Serviço</h2>
+                     <div id="specific-services" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4"></div>
+                    <button id="back-to-categories-button" class="mt-6 w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors">Voltar para Categorias</button>
+                </div>
+            </div>
+
+            <div id="order-summary-section" class="space-y-6 hidden">
+                 <h2 class="text-2xl font-semibold text-gray-800 border-b pb-3">4. Resumo do Pedido</h2>
+                 <div class="bg-gray-50 p-4 rounded-lg">
+                     <p class="font-medium text-gray-600">Cliente:</p>
+                     <p id="summary-client-name" class="text-lg font-semibold text-purple-800"></p>
+                 </div>
                  <div>
-                    <label for="discount-input" class="block text-gray-700 font-medium mb-1">Desconto (€)</label>
-                    <input type="number" id="discount-input" placeholder="0.00" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    <h3 class="font-semibold text-gray-700 mb-2">Serviços Selecionados:</h3>
+                    <div id="summary-services-list" class="space-y-3 max-h-60 overflow-y-auto pr-2"></div>
+                 </div>
+                 <div>
+                    <label for="order-comments" class="block text-gray-700 font-medium mb-1">Observações Gerais do Pedido</label>
+                    <textarea id="order-comments" rows="3" placeholder="Ex: Cliente pediu urgência, tecido delicado..." class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500"></textarea>
                 </div>
-            </div>
-            <div class="space-y-3 pt-4 border-t">
-                <div class="flex items-center">
-                    <input id="nif-checkbox" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500">
-                    <label for="nif-checkbox" class="ml-3 block text-gray-900 font-medium">Adicionar Contribuinte para Fatura</label>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label for="delivery-date" class="block text-gray-700 font-medium mb-1">Data de Entrega Prevista</label>
+                        <input type="date" id="delivery-date" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    </div>
+                     <div>
+                        <label for="discount-input" class="block text-gray-700 font-medium mb-1">Desconto (€)</label>
+                        <input type="number" id="discount-input" placeholder="0.00" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    </div>
                 </div>
-                <div id="nif-details-container" class="hidden ml-7 space-y-2"></div>
+                <div class="space-y-3 pt-4 border-t">
+                    <div class="flex items-center">
+                        <input id="nif-checkbox" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+                        <label for="nif-checkbox" class="ml-3 block text-gray-900 font-medium">Adicionar Contribuinte para Fatura</label>
+                    </div>
+                    <div id="nif-details-container" class="hidden ml-7 space-y-2"></div>
+                </div>
+                 <div class="text-right border-t pt-4">
+                     <p class="text-2xl font-bold text-gray-800">Total: <span id="summary-total-price" class="text-purple-600">€ 0.00</span></p>
+                 </div>
+                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4">
+                    <button id="add-another-service-button" class="w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors">Adicionar Outro Serviço</button>
+                    <button id="finalize-order-button" class="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition-colors">Finalizar Pedido</button>
+                 </div>
             </div>
-             <div class="text-right border-t pt-4">
-                 <p class="text-2xl font-bold text-gray-800">Total: <span id="summary-total-price" class="text-purple-600">€ 0.00</span></p>
-             </div>
-             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4">
-                <button id="add-another-service-button" class="w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors">Adicionar Outro Serviço</button>
-                <button id="finalize-order-button" class="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition-colors">Finalizar Pedido</button>
-             </div>
         </div>
-    </div>
+    </main>
 
     <div id="service-details-modal" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center p-4 z-50 hidden">
         <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md space-y-6">
@@ -124,180 +148,9 @@
 
     <script>
         const API_URL = `${window.location.protocol}//${window.location.host}`;
-
-        // ============================
-        // CONFIG IMPRESSÃO (QZ)
-        // ============================
-        const PRINTER_NAME = "POS-80";   // nome exato no Windows
-        const VAT_RATE = 0.23;           // 23%
-        const PAPER_WIDTH_CHARS = 42;    // 80mm costuma 42~48
-
-        const STORE_INFO = {
-            title1: "Ponto e Linha - Arranjos",
-            title2: "e Costuras",
-            company: "Enseada Cosmica Unipessoal LDA",
-            address1: "Av Aristides de Sousa Mendes, 79 loja 5",
-            address2: "2785-741 S.D. Rana",
-            nif: "517725576",
-            email: "pontoelinhapt@gmail.com",
-            phone: "925 442 437",
-        };
-
-        async function conectarQZ() {
-            if (!window.qz) throw new Error("QZ Tray não carregou.");
-            if (!qz.websocket.isActive()) {
-                await qz.websocket.connect();
-            }
-        }
-
-        function line(char='-') {
-            return (char.repeat(PAPER_WIDTH_CHARS)).slice(0, PAPER_WIDTH_CHARS) + "\n";
-        }
-
-        function twoCol(left, right) {
-            const space = PAPER_WIDTH_CHARS - String(left).length - String(right).length;
-            return String(left) + " ".repeat(Math.max(1, space)) + String(right) + "\n";
-        }
-
-        function padLeft(s, n) {
-            s = String(s ?? "");
-            return (" ".repeat(n) + s).slice(-n);
-        }
-
-        function money(v) {
-            const num = Number(v || 0);
-            return num.toFixed(2).replace(".", ",");
-        }
-
-        function buildReceiptEscPos(receiptData, viaLabel) {
-            const RESET = "\x1B\x40";
-            const ALIGN_CENTER = "\x1B\x61\x01";
-            const ALIGN_LEFT = "\x1B\x61\x00";
-            const BOLD_ON = "\x1B\x45\x01";
-            const BOLD_OFF = "\x1B\x45\x00";
-
-            const nowStr = receiptData.currentDate || new Date().toLocaleString("pt-PT").replace(",", "");
-            const vencStr = receiptData.deliveryDate || "";
-
-            // ✅ ajuste: tipo vira FATURA
-            const docType = receiptData.documentType || "Fatura";
-
-            // ✅ ajuste: remover "OT" do número (imprime só o número)
-            const docNumber = receiptData.documentNumber || String(receiptData.pedido_id).padStart(6, "0");
-
-            const clientNif = receiptData.clientNif ? receiptData.clientNif : "---------";
-            const clientName = receiptData.clientName || "";
-            const clientMorada = receiptData.clientAddressOrNotes || (receiptData.notes || "");
-
-            const total = Number(receiptData.totalPrice || 0);
-
-            const base = total / (1 + VAT_RATE);
-            const iva = total - base;
-
-            const out = [];
-
-            out.push(RESET);
-
-            out.push(ALIGN_CENTER);
-            out.push(BOLD_ON);
-            out.push(STORE_INFO.title1 + "\n");
-            out.push(STORE_INFO.title2 + "\n");
-            out.push(BOLD_OFF);
-            out.push(STORE_INFO.company + "\n");
-            out.push(STORE_INFO.address1 + "\n");
-            out.push(STORE_INFO.address2 + "\n");
-            out.push("NIF: " + STORE_INFO.nif + "\n");
-            out.push(STORE_INFO.email + "\n");
-            out.push("Tel.: " + STORE_INFO.phone + "\n");
-            out.push("\n");
-
-            out.push(ALIGN_CENTER);
-            out.push(STORE_INFO.title1 + " " + STORE_INFO.title2 + "\n");
-            out.push(line("-"));
-
-            out.push(ALIGN_LEFT);
-            out.push(twoCol(docType, docNumber));
-            out.push(line("-"));
-            out.push(twoCol("Original", nowStr));
-            out.push(twoCol("Vencimento", vencStr));
-            out.push("\n");
-
-            out.push("NIF: " + clientNif + "\n");
-            out.push("Nome: " + clientName + "\n");
-            if (clientMorada && String(clientMorada).trim()) {
-                out.push("Morada: " + String(clientMorada).trim() + "\n");
-            }
-            out.push("\n");
-
-            out.push(line("-"));
-            out.push(twoCol("Referencia Produto", "Total"));
-            out.push("Qtd. x Preco (IVA)\n");
-            out.push(line("-"));
-
-            (receiptData.services || []).forEach((it, idx) => {
-                const qty = Number(it.quantity || 1);
-                const unit = Number(it.unitPrice || 0);
-                const itemTotal = Number(it.itemTotal || (qty * unit));
-
-                const ref = `${String(receiptData.pedido_id).padStart(6, "0")}-${String(idx + 1).padStart(2, "0")}`;
-
-                out.push(twoCol(ref, money(itemTotal)));
-                out.push((it.name || "") + "\n");
-
-                out.push("  " + `${qty} x ${money(unit)} (23%)` + "\n");
-
-                if (it.description && String(it.description).trim()) {
-                    out.push("  " + String(it.description).trim() + "\n");
-                }
-                out.push("\n");
-            });
-
-            out.push(line("-"));
-
-            out.push(BOLD_ON);
-            out.push(twoCol("Total", "Eur " + money(total)));
-            out.push(BOLD_OFF);
-            out.push("\n");
-
-            out.push(line("-"));
-            out.push("IVA        Base        IVA        Total\n");
-            out.push(twoCol("23%", padLeft(money(base), 10) + "  " + padLeft(money(iva), 6) + "  " + padLeft(money(total), 6)));
-            out.push(line("-"));
-            out.push("\n");
-
-            // ✅ ajuste: removemos a frase “Este documento nao serve de fatura”
-
-            out.push(ALIGN_CENTER);
-            out.push(viaLabel + "\n");
-            out.push("\n\n\n");
-
-            out.push(ALIGN_LEFT);
-
-            return out;
-        }
-
-        async function printWithQZ(receiptData) {
-            await conectarQZ();
-            const config = qz.configs.create(PRINTER_NAME);
-
-            const viaCliente = buildReceiptEscPos(receiptData, "VIA CLIENTE");
-            const viaLoja = buildReceiptEscPos(receiptData, "VIA LOJA");
-
-            const CUT = "\x1D\x56\x00";
-
-            const payload = [
-                ...viaCliente,
-                CUT,
-                ...viaLoja,
-                CUT
-            ];
-
-            await qz.print(config, payload);
-        }
-
-        // ============================
-        // APP (Atendimento)
-        // ============================
+        const PRINT_SERVER_URL = "http://127.0.0.1:8080";
+        
+        const mainApplication = document.getElementById('main-application');
         const clientSection = document.getElementById('client-section');
         const serviceSection = document.getElementById('service-section');
         const orderSummarySection = document.getElementById('order-summary-section');
@@ -327,7 +180,7 @@
         const modalConfirmButton = document.getElementById('modal-confirm-button');
         const nifCheckbox = document.getElementById('nif-checkbox');
         const nifDetailsContainer = document.getElementById('nif-details-container');
-
+        
         let allServicesData = {};
         let currentClient = null;
         let selectedServices = [];
@@ -377,7 +230,7 @@
                 });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || 'Erro ao cadastrar.');
-                currentClient = { id: result.id_client, id_client: result.id_client, name: name, nif: nif };
+                currentClient = { id: result.id, name: name, nif: nif };
                 clientDetailsInputDiv.classList.add('hidden');
                 clientInfoParagraph.innerHTML = `Cliente cadastrado: <strong class="text-purple-700">${name}</strong>`;
                 clientInfoParagraph.className = 'text-green-600 text-base font-semibold mt-3 h-6';
@@ -401,7 +254,7 @@
                 alert(`Erro: ${error.message}`);
             }
         };
-
+        
         function displayServiceCategories(categories) {
             serviceCategoriesDiv.innerHTML = '';
             Object.keys(categories).forEach(category => {
@@ -454,9 +307,9 @@
             nifDetailsContainer.innerHTML = '';
             if (nifCheckbox.checked) {
                 if (currentClient && currentClient.nif) {
-                    nifDetailsContainer.innerHTML = `<p class="font-medium text-gray-800 bg-gray-100 p-3 rounded-lg">Contribuinte: ${currentClient.nif}</p>`;
+                     nifDetailsContainer.innerHTML = `<p class="font-medium text-gray-800 bg-gray-100 p-3 rounded-lg">Contribuinte: ${currentClient.nif}</p>`;
                 } else {
-                    nifDetailsContainer.innerHTML = `<label for="nif-input" class="block text-gray-700 font-medium mb-1">Nº Contribuinte</label><div class="flex space-x-2"><input type="text" id="nif-input" placeholder="999999999" class="w-full px-4 py-2 rounded-lg border border-gray-300"><button onclick="saveNif()" class="bg-indigo-600 text-white px-4 rounded-lg font-semibold hover:bg-indigo-700">Guardar</button></div><p id="nif-feedback" class="text-sm h-4 mt-1"></p>`;
+                     nifDetailsContainer.innerHTML = `<label for="nif-input" class="block text-gray-700 font-medium mb-1">Nº Contribuinte</label><div class="flex space-x-2"><input type="text" id="nif-input" placeholder="999999999" class="w-full px-4 py-2 rounded-lg border border-gray-300"><button onclick="saveNif()" class="bg-indigo-600 text-white px-4 rounded-lg font-semibold hover:bg-indigo-700">Guardar</button></div><p id="nif-feedback" class="text-sm h-4 mt-1"></p>`;
                 }
                 nifDetailsContainer.classList.remove('hidden');
             } else {
@@ -470,8 +323,7 @@
             const nif = nifInput.value.trim();
             if (!nif) { feedbackEl.textContent = 'Por favor, insira o NIF.'; feedbackEl.className = 'text-red-500 text-sm h-4 mt-1'; return; }
             try {
-                const clientId = currentClient.id_client || currentClient.id;
-                const response = await fetch(`${API_URL}/clients/${clientId}/nif`, {
+                const response = await fetch(`${API_URL}/clients/${currentClient.id}/nif`, {
                     method: 'PUT', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ nif: nif })
                 });
@@ -481,18 +333,34 @@
                 feedbackEl.textContent = 'NIF guardado com sucesso!';
                 feedbackEl.className = 'text-green-600 text-sm h-4 mt-1';
                 setTimeout(updateNifDisplay, 1500);
-            } catch (error) {
+            } catch(error) {
                 console.error(error);
                 feedbackEl.textContent = error.message;
                 feedbackEl.className = 'text-red-500 text-sm h-4 mt-1';
             }
         };
-
+        
         const addServiceToOrder = (service, quantity, description) => {
             selectedServices.push({ ...service, quantity, description });
             renderOrderSummary();
         };
+        
+        const updateServiceInOrder = (index, quantity, description) => {
+             selectedServices[index].quantity = quantity;
+             selectedServices[index].description = description;
+             renderOrderSummary();
+        };
 
+        const removeService = (index) => {
+            selectedServices.splice(index, 1);
+            if (selectedServices.length === 0) { showCategories(); orderSummarySection.classList.add('hidden'); }
+            else { renderOrderSummary(); }
+        };
+
+        const editService = (index) => {
+            openServiceModal('edit', selectedServices[index], index);
+        };
+        
         const openServiceModal = (action, service, index = null) => {
             currentServiceAction = { action, service, index };
             modalTitle.textContent = action === 'add' ? 'Adicionar Detalhes' : 'Editar Detalhes';
@@ -500,7 +368,7 @@
             document.getElementById('service-description').value = service.description || '';
             serviceDetailsModal.classList.remove('hidden');
         };
-
+        
         const closeServiceModal = () => {
             serviceDetailsModal.classList.add('hidden');
             currentServiceAction = null;
@@ -509,34 +377,26 @@
         const confirmServiceAction = () => {
             const quantity = parseInt(document.getElementById('service-quantity').value);
             const description = document.getElementById('service-description').value.trim();
-            const { action, service } = currentServiceAction;
+            const { action, service, index } = currentServiceAction;
             if (action === 'add') { addServiceToOrder(service, quantity, description); }
+            else if (action === 'edit') { updateServiceInOrder(index, quantity, description); }
             closeServiceModal();
         };
-
+        
         const finalizeOrder = async () => {
             const deliveryDate = document.getElementById('delivery-date').value;
             const comments = document.getElementById('order-comments').value;
             const discount = parseFloat(document.getElementById('discount-input').value) || 0;
-
             if (!deliveryDate) { alert('Por favor, selecione uma data de entrega prevista.'); return; }
-
             let subtotal = 0;
             selectedServices.forEach(s => { subtotal += s.preco * s.quantity; });
             const totalPrice = subtotal - discount;
-
-            const clientId = currentClient.id_client || currentClient.id;
-
             const orderData = {
-                clientId: clientId,
-                deliveryDate: deliveryDate,
-                comments: comments,
-                discount: discount,
-                totalPrice: totalPrice,
-                services: selectedServices.map(s => ({
-                    id: s.id,
-                    quantity: s.quantity,
-                    description: s.description,
+                clientId: currentClient.id, deliveryDate: deliveryDate, comments: comments, discount: discount, totalPrice: totalPrice,
+                services: selectedServices.map(s => ({ 
+                    id: s.id, 
+                    quantity: s.quantity, 
+                    description: s.description, 
                     preco: s.preco,
                     nome: s.nome
                 }))
@@ -549,48 +409,41 @@
                 });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || 'Não foi possível criar o pedido.');
+                
+                alert(`Pedido #${result.pedido_id} criado com sucesso! A imprimir...`);
 
-                const now = new Date();
-                const currentDate = now.toLocaleString('pt-PT').replace(',', '');
-                const deliveryStr = new Date(orderData.deliveryDate + 'T00:00:00').toLocaleDateString('pt-PT');
-
-                // ✅ agora imprimimos como FATURA e sem OT
                 const receiptData = {
                     pedido_id: result.pedido_id,
-                    documentType: "Fatura",
-                    documentNumber: String(result.pedido_id).padStart(6, "0"),
-                    currentDate: currentDate,
-                    deliveryDate: deliveryStr,
                     clientName: currentClient.name,
                     clientNif: currentClient.nif,
-                    clientAddressOrNotes: comments,
-                    notes: comments,
-                    subtotal: subtotal,
-                    discount: discount,
-                    totalPrice: totalPrice,
+                    currentDate: new Date().toLocaleString('pt-PT').replace(',', ''),
+                    deliveryDate: new Date(orderData.deliveryDate + 'T00:00:00').toLocaleDateString('pt-PT'),
                     services: selectedServices.map(s => ({
                         quantity: s.quantity,
                         name: s.nome,
                         description: s.description,
-                        unitPrice: s.preco,
-                        itemTotal: (s.preco * s.quantity)
-                    }))
+                        itemTotal: (s.preco * s.quantity).toFixed(2)
+                    })),
+                    discount: orderData.discount.toFixed(2),
+                    totalPrice: orderData.totalPrice.toFixed(2)
                 };
+                
+                const printResponse = await fetch(`${PRINT_SERVER_URL}/print`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(receiptData)
+                });
 
-                await printWithQZ(receiptData);
-
-                alert(`Pedido #${result.pedido_id} criado e impresso com sucesso!`);
+                if (!printResponse.ok) {
+                   const printError = await printResponse.json();
+                   throw new Error(`Pedido guardado, mas falha ao imprimir: ${printError.error}`);
+                }
+                
                 window.location.reload();
 
             } catch (error) {
                 console.error(error);
-                alert(
-                    `Erro: ${error.message}\n\n` +
-                    `Confirme:\n` +
-                    `- QZ Tray está aberto\n` +
-                    `- A impressora "${PRINTER_NAME}" existe no Windows\n` +
-                    `- Você autorizou o site no QZ (Allow/Trusted)\n`
-                );
+                alert(`Erro: ${error.message}\n\nVerifique se o servidor de impressão está a ser executado.`);
             }
         };
 
@@ -602,17 +455,13 @@
         modalCancelButton.addEventListener('click', closeServiceModal);
         modalConfirmButton.addEventListener('click', confirmServiceAction);
         addAnotherServiceButton.addEventListener('click', () => {
-            orderSummarySection.classList.add('hidden');
-            serviceSection.classList.remove('hidden');
-            showCategories();
+             orderSummarySection.classList.add('hidden');
+             serviceSection.classList.remove('hidden');
+             showCategories();
         });
         finalizeOrderButton.addEventListener('click', finalizeOrder);
         nifCheckbox.addEventListener('change', updateNifDisplay);
         continueToServicesButton.addEventListener('click', loadServicesAndShowCategories);
-
-        window.addEventListener("load", async () => {
-            try { await conectarQZ(); } catch (e) { /* silencioso */ }
-        });
 
     </script>
 </body>
