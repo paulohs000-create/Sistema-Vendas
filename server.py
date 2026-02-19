@@ -20,11 +20,9 @@ def create_app() -> Flask:
         raise RuntimeError("DATABASE_URL não configurada nas variáveis de ambiente.")
 
     # ====== USERS / ROLES ======
-    # Você define user/pass via env vars. Se não definir, fica com defaults (não recomendado).
     def _env(name: str, default: str) -> str:
         return os.environ.get(name, default)
 
-    # Armazenamos hash na memória (simples e suficiente pro teu caso agora)
     USERS = {
         _env("ADMIN_USER", "admin"): {
             "password_hash": generate_password_hash(_env("ADMIN_PASS", "admin123")),
@@ -42,11 +40,9 @@ def create_app() -> Flask:
 
     # ====== DB HELPERS ======
     def get_db_connection():
-        # psycopg v3
         return psycopg.connect(database_url, row_factory=dict_row)
 
     def is_api_request() -> bool:
-        # Heurística simples: endpoints que devolvem JSON
         return (
             request.path.startswith("/clients")
             or request.path.startswith("/services")
@@ -54,6 +50,7 @@ def create_app() -> Flask:
             or request.path.startswith("/pedidos")
             or request.path.startswith("/db-test")
             or request.path.startswith("/health")
+            or request.path.startswith("/users")
         )
 
     def login_required(fn):
@@ -105,7 +102,6 @@ def create_app() -> Flask:
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if request.method == "GET":
-            # Se já estiver logado, manda pro destino conforme role
             if session.get("user"):
                 return redirect_by_role()
             return render_template("login.html", next=request.args.get("next", "/"))
@@ -121,7 +117,6 @@ def create_app() -> Flask:
         session["user"] = data_user
         session["role"] = user["role"]
 
-        # Se o next for uma rota que o role não pode, redireciona corretamente
         return redirect_by_role(preferred_next=next_url)
 
     @app.route("/logout")
@@ -131,18 +126,23 @@ def create_app() -> Flask:
 
     def redirect_by_role(preferred_next: str | None = None):
         role = session.get("role")
-        # Regras:
-        # admin -> pode ir pro preferred_next
-        # caixa -> sempre "/"
-        # costureira -> sempre "/costureiras"
+
+        # admin -> manda pro /admin (menu)
         if role == "admin":
-            if preferred_next and preferred_next.startswith("/"):
+            # se tentou abrir algo específico, e for rota interna, pode respeitar
+            # mas por padrão vai pro menu
+            if preferred_next and preferred_next.startswith("/") and preferred_next != "/":
                 return redirect(preferred_next)
-            return redirect(url_for("serve_main_page"))
+            return redirect(url_for("admin_home"))
+
+        # caixa -> sempre "/"
         if role == "caixa":
             return redirect(url_for("serve_main_page"))
+
+        # costureira -> sempre "/costureiras"
         if role == "costureira":
             return redirect(url_for("serve_seamstress_page"))
+
         return redirect(url_for("serve_main_page"))
 
     # ====== PAGES ======
@@ -151,6 +151,13 @@ def create_app() -> Flask:
     @roles_required("admin", "caixa")
     def serve_main_page():
         return render_template("atendimento.html")
+
+    @app.route("/admin")
+    @login_required
+    @roles_required("admin")
+    def admin_home():
+        # menu do admin
+        return render_template("admin.html")
 
     @app.route("/gerenciamento")
     @login_required
@@ -374,6 +381,7 @@ def create_app() -> Flask:
                 if cur.rowcount == 0:
                     return jsonify({"error": "Costureira não encontrada."}), 404
             conn.commit()
+
         return jsonify({"message": "Costureira atualizada com sucesso"}), 200
 
     @app.route("/seamstresses/<int:seamstress_id>", methods=["DELETE"])
@@ -466,7 +474,6 @@ def create_app() -> Flask:
         params = []
 
         if search_term:
-            # busca por nome do cliente ou número do pedido
             where_clauses.append("(c.name ILIKE %s OR CAST(p.id_pedido AS TEXT) ILIKE %s)")
             params.extend([f"%{search_term}%", f"%{search_term}%"])
         else:
@@ -486,7 +493,6 @@ def create_app() -> Flask:
                 cur.execute(query, params)
                 rows = cur.fetchall()
 
-        # formatando datas igual teu front espera
         services = []
         for r in rows:
             data_prevista = r["data_prevista"].strftime("%d/%m/%Y") if r.get("data_prevista") else None
@@ -506,11 +512,9 @@ def create_app() -> Flask:
                 }
             )
 
-        # Se é busca, devolve lista simples (como teu JS já faz)
         if search_term or selected_date_str:
             return jsonify(services), 200
 
-        # Se não tem filtro, devolve categorizado (atrasados/hoje/proximos)
         today = datetime.now().date()
         categorized = {"hoje": [], "atrasados": [], "proximos": []}
 
