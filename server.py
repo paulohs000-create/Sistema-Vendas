@@ -2,244 +2,204 @@ import os
 from datetime import date, datetime
 from functools import wraps
 
-from flask import (
-    Flask,
-    request,
-    jsonify,
-    render_template,
-    session,
-    redirect,
-    url_for,
-)
-from flask_cors import CORS
-
 import psycopg
 from psycopg.rows import dict_row
-
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
+from flask_cors import CORS
 
 app = Flask(__name__, template_folder="templates")
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 CORS(app)
 
-app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
+# ---------------------------
+# Database helpers (Postgres)
+# ---------------------------
 
-# Variáveis Railway (formato: user:pass)
-ADMIN_USER = os.environ.get("ADMIN_USER", "admin:admin")
-CAIXA_USER = os.environ.get("CAIXA_USER", "caixa:caixa")
-COSTUREIRA_USER = os.environ.get("COSTUREIRA_USER", "costureira:costureira")
+def get_database_url() -> str | None:
+    # Railway typically exposes DATABASE_URL. Some setups use POSTGRES_URL/PG* vars.
+    return (
+        os.environ.get("DATABASE_URL")
+        or os.environ.get("POSTGRES_URL")
+        or os.environ.get("POSTGRESQL_URL")
+        or os.environ.get("DATABASE_PRIVATE_URL")
+    )
 
-DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("DATABASE_PUBLIC_URL")
-if not DATABASE_URL:
-    print("AVISO: DATABASE_URL não definido. Configure nas Variables do Railway.")
-
-
-# -----------------------
-# DB helpers
-# -----------------------
 def get_db_connection():
-    if not DATABASE_URL:
+    dsn = get_database_url()
+    if not dsn:
         return None
-    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
-    return conn
+    # psycopg3 supports postgres:// and postgresql:// DSNs
+    return psycopg.connect(dsn, row_factory=dict_row)
 
+# ---------------------------
+# Error handling
+# ---------------------------
 
-def handle_errors(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
+def handle_errors(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
         try:
-            return f(*args, **kwargs)
-        except psycopg.Error as db_err:
-            print(f"ERRO DB na rota {request.path}: {db_err}")
-            return jsonify({"error": f"Erro de banco de dados: {str(db_err)}"}), 500
+            return fn(*args, **kwargs)
+        except psycopg.Error as e:
+            return jsonify({"error": "Erro no banco de dados", "detail": str(e)}), 500
         except Exception as e:
-            print(f"ERRO INESPERADO na rota {request.path}: {e}")
-            return jsonify({"error": f"Ocorreu um erro inesperado: {str(e)}"}), 500
+            return jsonify({"error": "Erro interno", "detail": str(e)}), 500
+    return wrapper
 
-    return decorated_function
-
-
-# -----------------------
+# ---------------------------
 # Auth helpers
-# -----------------------
-def login_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if not session.get("user"):
-            return redirect(url_for("login", next=request.path))
-        return f(*args, **kwargs)
+# ---------------------------
 
-    return decorated
+def _parse_user_pass(user_value: str | None, pass_value: str | None):
+    """
+    Aceita:
+      - user_value no formato 'user:pass' (uma variável só), OU
+      - user_value='user' e pass_value='pass' (variáveis separadas)
 
+    Retorna (user, pass) ou (None, None).
+    """
+    if user_value and ":" in user_value and (pass_value is None or pass_value == ""):
+        u, p = user_value.split(":", 1)
+        return u.strip(), p
+    if user_value and pass_value:
+        return user_value.strip(), pass_value
+    if user_value and (pass_value is None):
+        # user fornecido mas senha ausente
+        return user_value.strip(), ""
+    return None, None
 
-def role_required(*roles):
-    def decorator(f):
-        @wraps(f)
-        def decorated(*args, **kwargs):
-            if not session.get("user"):
-                return redirect(url_for("login", next=request.path))
-            if session.get("role") not in roles:
+def get_users_config():
+    admin_u, admin_p = _parse_user_pass(os.environ.get("ADMIN_USER"), os.environ.get("ADMIN_PASS"))
+    caixa_u, caixa_p = _parse_user_pass(os.environ.get("CAIXA_USER"), os.environ.get("CAIXA_PASS"))
+    cost_u, cost_p = _parse_user_pass(os.environ.get("COSTUREIRA_USER"), os.environ.get("COSTUREIRA_PASS"))
+
+    return {
+        "admin": {"user": admin_u, "pass": admin_p},
+        "caixa": {"user": caixa_u, "pass": caixa_p},
+        "costureira": {"user": cost_u, "pass": cost_p},
+    }
+
+def login_required(role: str | None = None):
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not session.get("role"):
+                return redirect(url_for("login"))
+            if role and session.get("role") != role:
                 return jsonify({"error": "Acesso negado"}), 403
-            return f(*args, **kwargs)
-
-        return decorated
-
+            return fn(*args, **kwargs)
+        return wrapper
     return decorator
 
+# ---------------------------
+# Page routes
+# ---------------------------
 
-def _parse_user_cred(env_value: str):
-    """
-    Espera formato 'user:pass'. Se não tiver ':', senha vira vazia.
-    """
-    if env_value is None:
-        return "", ""
-    env_value = str(env_value).strip()
-    if ":" in env_value:
-        u, p = env_value.split(":", 1)
-        return u.strip(), p.strip()
-    return env_value.strip(), ""
+@app.get("/")
+def index():
+    role = session.get("role")
+    if role == "admin":
+        return redirect(url_for("admin_dashboard"))
+    if role == "caixa":
+        return redirect(url_for("atendimento_page"))
+    if role == "costureira":
+        return redirect(url_for("costureiras_page"))
+    return redirect(url_for("login"))
 
-
-def _check_credentials(username: str, password: str):
-    """
-    - username comparado case-insensitive (Paulo == paulo)
-    - password comparado exato (case-sensitive)
-    """
-    username_norm = (username or "").strip().lower()
-    password_norm = (password or "").strip()  # senha exata
-
-    au, ap = _parse_user_cred(ADMIN_USER)
-    cu, cp = _parse_user_cred(CAIXA_USER)
-    su, sp = _parse_user_cred(COSTUREIRA_USER)
-
-    if username_norm == (au or "").lower() and password_norm == (ap or ""):
-        return "admin"
-    if username_norm == (cu or "").lower() and password_norm == (cp or ""):
-        return "caixa"
-    if username_norm == (su or "").lower() and password_norm == (sp or ""):
-        return "costureira"
-    return None
-
-
-def _extract_login_fields():
-    """
-    Aceita vários nomes de campos:
-    - username / password
-    - usuario / senha
-    - user / pass
-    Funciona tanto para FORM quanto JSON.
-    """
-    if request.is_json:
-        data = request.get_json(silent=True) or {}
-    else:
-        data = request.form.to_dict() if request.form else {}
-
-    # tenta em ordem
-    username = (
-        data.get("username")
-        or data.get("usuario")
-        or data.get("user")
-        or data.get("login")
-        or ""
-    )
-    password = (
-        data.get("password")
-        or data.get("senha")
-        or data.get("pass")
-        or data.get("passwd")
-        or ""
-    )
-    return str(username).strip(), str(password).strip()
-
-
-# -----------------------
-# Pages / Auth routes
-# -----------------------
 @app.route("/login", methods=["GET", "POST"])
-@handle_errors
 def login():
     if request.method == "GET":
         return render_template("login.html")
 
-    username, password = _extract_login_fields()
+    username = (request.form.get("username") or "").strip()
+    password = (request.form.get("password") or "").strip()
 
-    # debug leve (NÃO mostra senha)
-    print(f"[LOGIN] Tentativa de login user='{username}' (ADMIN_USER='{_parse_user_cred(ADMIN_USER)[0]}')")
+    users = get_users_config()
 
-    role = _check_credentials(username, password)
-    if not role:
-        if request.is_json:
-            return jsonify({"error": "Usuário ou senha inválidos"}), 401
-        return render_template("login.html", error="Usuário ou senha inválidos"), 401
+    for role, conf in users.items():
+        if conf["user"] is None:
+            continue
+        if username == conf["user"] and password == (conf["pass"] or ""):
+            session.clear()
+            session["role"] = role
+            session["username"] = username
+            return redirect(url_for("index"))
 
-    session["user"] = username
-    session["role"] = role
+    return render_template("login.html", error="Usuário ou senha inválidos"), 401
 
-    if role == "admin":
-        return redirect("/admin")
-    if role == "caixa":
-        return redirect("/")
-    if role == "costureira":
-        return redirect("/costureiras")
-    return redirect("/")
-
-
-@app.route("/logout")
-@handle_errors
+@app.get("/logout")
 def logout():
     session.clear()
-    return redirect("/login")
+    return redirect(url_for("login"))
 
+@app.get("/admin")
+@login_required("admin")
+def admin_dashboard():
+    # precisa existir templates/admin.html no repo
+    return render_template("admin.html", username=session.get("username"))
 
-@app.route("/")
-@handle_errors
-@login_required
-def serve_main_page():
+@app.get("/atendimento")
+@login_required()
+def atendimento_page():
+    # caixa ou admin
+    if session.get("role") not in ("caixa", "admin"):
+        return redirect(url_for("login"))
     return render_template("atendimento.html")
 
+@app.get("/gerenciamento")
+@login_required()
+def gerenciamento_page():
+    # admin
+    if session.get("role") not in ("admin",):
+        return redirect(url_for("login"))
+    return render_template("Gerenciamento.html")
 
-@app.route("/gerenciamento")
-@handle_errors
-@role_required("admin")
-def serve_management_page():
-    return render_template("gerenciamento.html")
-
-
-@app.route("/costureiras")
-@handle_errors
-@login_required
-def serve_seamstress_page():
+@app.get("/costureiras")
+@login_required()
+def costureiras_page():
+    # costureira ou admin
+    if session.get("role") not in ("costureira", "admin"):
+        return redirect(url_for("login"))
     return render_template("costureiras.html")
 
+# ---------------------------
+# Health & debug
+# ---------------------------
 
-@app.route("/admin")
-@handle_errors
-@role_required("admin")
-def serve_admin_page():
-    return render_template("admin.html")
-
-
-@app.route("/health")
+@app.get("/health")
 def health():
-    return jsonify({"status": "ok"}), 200
+    return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
 
-
-@app.route("/db-test")
+@app.get("/db-test")
 @handle_errors
 def db_test():
     conn = get_db_connection()
     if conn is None:
-        return jsonify({"error": "Sem DATABASE_URL"}), 500
+        return jsonify({"ok": False, "error": "DATABASE_URL não configurada"}), 500
     with conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT 1 as ok;")
+            cur.execute("SELECT 1 AS one")
             row = cur.fetchone()
     conn.close()
-    return jsonify(row), 200
+    return jsonify({"ok": True, "result": row})
 
+# DEBUG TEMPORÁRIO (remova depois)
+@app.get("/debug-env")
+def debug_env():
+    return {
+        "ADMIN_USER": os.environ.get("ADMIN_USER"),
+        "ADMIN_PASS": "***" if os.environ.get("ADMIN_PASS") else None,
+        "CAIXA_USER": os.environ.get("CAIXA_USER"),
+        "CAIXA_PASS": "***" if os.environ.get("CAIXA_PASS") else None,
+        "COSTUREIRA_USER": os.environ.get("COSTUREIRA_USER"),
+        "COSTUREIRA_PASS": "***" if os.environ.get("COSTUREIRA_PASS") else None,
+    }
 
-# -----------------------
-# Clientes
-# -----------------------
-@app.route("/clients/<phone>", methods=["GET"])
+# ---------------------------
+# API - Clients
+# ---------------------------
+
+@app.get("/clients/<phone>")
 @handle_errors
 def get_client_by_phone(phone):
     conn = get_db_connection()
@@ -249,27 +209,35 @@ def get_client_by_phone(phone):
     with conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id_client, name, nif FROM clients WHERE phone = %s",
+                "SELECT id_client, name, phone, nif FROM clients WHERE phone = %s",
                 (phone,),
             )
-            client = cur.fetchone()
+            row = cur.fetchone()
 
     conn.close()
-    if client:
-        return jsonify({"id": client["id_client"], "name": client["name"], "nif": client["nif"]}), 200
-    return jsonify({"error": "Cliente não encontrado"}), 404
 
+    if not row:
+        return jsonify({"error": "Cliente não encontrado"}), 404
 
-@app.route("/clients", methods=["POST"])
+    return jsonify(
+        {
+            "id": row["id_client"],
+            "name": row["name"],
+            "phone": row["phone"],
+            "nif": row.get("nif"),
+        }
+    )
+
+@app.post("/clients")
 @handle_errors
-def add_client():
-    data = request.json or {}
-    name = data.get("name")
-    phone = data.get("phone")
-    nif = data.get("nif")
+def create_client():
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get("name") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    nif = (data.get("nif") or "").strip() or None
 
     if not name or not phone:
-        return jsonify({"error": "Nome e telefone são obrigatórios."}), 400
+        return jsonify({"error": "Nome e telefone são obrigatórios"}), 400
 
     conn = get_db_connection()
     if conn is None:
@@ -284,16 +252,15 @@ def add_client():
             new_id = cur.fetchone()["id_client"]
 
     conn.close()
-    return jsonify({"message": "Cliente cadastrado com sucesso", "id": new_id}), 201
+    return jsonify({"id": new_id})
 
-
-@app.route("/clients/<int:client_id>/nif", methods=["PUT"])
+@app.put("/clients/<int:client_id>/nif")
 @handle_errors
 def update_client_nif(client_id):
-    data = request.json or {}
-    nif = data.get("nif")
+    data = request.get_json(force=True, silent=True) or {}
+    nif = (data.get("nif") or "").strip()
     if not nif:
-        return jsonify({"error": "O NIF é obrigatório."}), 400
+        return jsonify({"error": "NIF é obrigatório"}), 400
 
     conn = get_db_connection()
     if conn is None:
@@ -301,24 +268,20 @@ def update_client_nif(client_id):
 
     with conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE clients SET nif = %s WHERE id_client = %s",
-                (nif, client_id),
-            )
-            updated = cur.rowcount
+            cur.execute("UPDATE clients SET nif = %s WHERE id_client = %s", (nif, client_id))
+            if cur.rowcount == 0:
+                return jsonify({"error": "Cliente não encontrado"}), 404
 
     conn.close()
-    if updated == 0:
-        return jsonify({"error": "Cliente não encontrado."}), 404
-    return jsonify({"message": "NIF do cliente atualizado com sucesso."}), 200
+    return jsonify({"ok": True})
 
+# ---------------------------
+# API - Services
+# ---------------------------
 
-# -----------------------
-# Serviços
-# -----------------------
-@app.route("/services", methods=["GET"])
+@app.get("/services")
 @handle_errors
-def get_services():
+def list_services_grouped():
     conn = get_db_connection()
     if conn is None:
         return jsonify({"error": "Erro de conexão"}), 500
@@ -332,27 +295,25 @@ def get_services():
 
     conn.close()
 
-    services_by_category = {}
+    grouped = {}
     for r in rows:
         cat = r["category"]
-        services_by_category.setdefault(cat, [])
-        services_by_category[cat].append(
+        grouped.setdefault(cat, []).append(
             {"id": r["id_service"], "nome": r["name"], "preco": float(r["price"])}
         )
-    return jsonify(services_by_category), 200
 
+    return jsonify(grouped)
 
-@app.route("/services", methods=["POST"])
+@app.post("/services")
 @handle_errors
-@role_required("admin")
-def add_service():
-    data = request.json or {}
-    name = data.get("name")
-    category = data.get("category")
+def create_service():
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get("name") or "").strip()
+    category = (data.get("category") or "").strip()
     price = data.get("price")
 
     if not name or not category or price is None:
-        return jsonify({"error": "Nome, categoria e preço são obrigatórios."}), 400
+        return jsonify({"error": "name, category e price são obrigatórios"}), 400
 
     conn = get_db_connection()
     if conn is None:
@@ -362,25 +323,23 @@ def add_service():
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO services (name, category, price) VALUES (%s, %s, %s) RETURNING id_service",
-                (name, category, float(price)),
+                (name, category, price),
             )
             new_id = cur.fetchone()["id_service"]
 
     conn.close()
-    return jsonify({"message": "Serviço adicionado com sucesso", "id": new_id}), 201
+    return jsonify({"id": new_id})
 
-
-@app.route("/services/<int:service_id>", methods=["PUT"])
+@app.put("/services/<int:service_id>")
 @handle_errors
-@role_required("admin")
 def update_service(service_id):
-    data = request.json or {}
-    name = data.get("name")
-    category = data.get("category")
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get("name") or "").strip()
+    category = (data.get("category") or "").strip()
     price = data.get("price")
 
     if not name or not category or price is None:
-        return jsonify({"error": "Nome, categoria e preço são obrigatórios."}), 400
+        return jsonify({"error": "name, category e price são obrigatórios"}), 400
 
     conn = get_db_connection()
     if conn is None:
@@ -389,20 +348,17 @@ def update_service(service_id):
     with conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE services SET name = %s, category = %s, price = %s WHERE id_service = %s",
-                (name, category, float(price), service_id),
+                "UPDATE services SET name=%s, category=%s, price=%s WHERE id_service=%s",
+                (name, category, price, service_id),
             )
-            updated = cur.rowcount
+            if cur.rowcount == 0:
+                return jsonify({"error": "Serviço não encontrado"}), 404
 
     conn.close()
-    if updated == 0:
-        return jsonify({"error": "Serviço não encontrado."}), 404
-    return jsonify({"message": "Serviço atualizado com sucesso"}), 200
+    return jsonify({"ok": True})
 
-
-@app.route("/services/<int:service_id>", methods=["DELETE"])
+@app.delete("/services/<int:service_id>")
 @handle_errors
-@role_required("admin")
 def delete_service(service_id):
     conn = get_db_connection()
     if conn is None:
@@ -410,21 +366,20 @@ def delete_service(service_id):
 
     with conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM services WHERE id_service = %s", (service_id,))
-            deleted = cur.rowcount
+            cur.execute("DELETE FROM services WHERE id_service=%s", (service_id,))
+            if cur.rowcount == 0:
+                return jsonify({"error": "Serviço não encontrado"}), 404
 
     conn.close()
-    if deleted == 0:
-        return jsonify({"error": "Serviço não encontrado."}), 404
-    return jsonify({"message": "Serviço apagado com sucesso"}), 200
+    return jsonify({"ok": True})
 
+# ---------------------------
+# API - Seamstresses (Costureiras)
+# ---------------------------
 
-# -----------------------
-# Costureiras
-# -----------------------
-@app.route("/seamstresses", methods=["GET"])
+@app.get("/seamstresses")
 @handle_errors
-def get_seamstresses():
+def list_seamstresses():
     conn = get_db_connection()
     if conn is None:
         return jsonify({"error": "Erro de conexão"}), 500
@@ -435,17 +390,15 @@ def get_seamstresses():
             rows = cur.fetchall()
 
     conn.close()
-    return jsonify([{"id": r["id_seamstress"], "name": r["name"]} for r in rows]), 200
+    return jsonify(rows)
 
-
-@app.route("/seamstresses", methods=["POST"])
+@app.post("/seamstresses")
 @handle_errors
-@role_required("admin")
-def add_seamstress():
-    data = request.json or {}
-    name = data.get("name")
+def create_seamstress():
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get("name") or "").strip()
     if not name:
-        return jsonify({"error": "O nome é obrigatório."}), 400
+        return jsonify({"error": "Nome é obrigatório"}), 400
 
     conn = get_db_connection()
     if conn is None:
@@ -460,19 +413,15 @@ def add_seamstress():
             new_id = cur.fetchone()["id_seamstress"]
 
     conn.close()
-    return jsonify({"message": "Costureira adicionada com sucesso", "id": new_id}), 201
+    return jsonify({"id": new_id})
 
-
-# -----------------------
-# Pedidos
-# -----------------------
-@app.route("/pedidos", methods=["POST"])
+@app.put("/seamstresses/<int:seamstress_id>")
 @handle_errors
-def add_pedido():
-    data = request.json or {}
-    delivery_date = data.get("deliveryDate")
-    if not delivery_date:
-        return jsonify({"error": "A data de entrega prevista é obrigatória."}), 400
+def update_seamstress(seamstress_id):
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Nome é obrigatório"}), 400
 
     conn = get_db_connection()
     if conn is None:
@@ -481,123 +430,201 @@ def add_pedido():
     with conn:
         with conn.cursor() as cur:
             cur.execute(
+                "UPDATE seamstresses SET name=%s WHERE id_seamstress=%s",
+                (name, seamstress_id),
+            )
+            if cur.rowcount == 0:
+                return jsonify({"error": "Costureira não encontrada"}), 404
+
+    conn.close()
+    return jsonify({"ok": True})
+
+@app.delete("/seamstresses/<int:seamstress_id>")
+@handle_errors
+def delete_seamstress(seamstress_id):
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"error": "Erro de conexão"}), 500
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM seamstresses WHERE id_seamstress=%s", (seamstress_id,))
+            if cur.rowcount == 0:
+                return jsonify({"error": "Costureira não encontrada"}), 404
+
+    conn.close()
+    return jsonify({"ok": True})
+
+# ---------------------------
+# API - Pedidos
+# ---------------------------
+
+@app.post("/pedidos")
+@handle_errors
+def create_pedido():
+    data = request.get_json(force=True, silent=True) or {}
+
+    client_id = data.get("clientId")
+    delivery_date = data.get("deliveryDate")  # YYYY-MM-DD
+    comments = data.get("comments")
+    discount = data.get("discount") or 0
+    total_price = data.get("totalPrice") or 0
+    services = data.get("services") or []
+
+    if not client_id or not delivery_date or not services:
+        return jsonify({"error": "clientId, deliveryDate e services são obrigatórios"}), 400
+
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"error": "Erro de conexão"}), 500
+
+    now = datetime.now()
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
                 """
-                INSERT INTO pedidos (id_client, data_prevista, observacoes, desconto, preco_total, status, data_entrada)
-                VALUES (%s, %s, %s, %s, %s, 'Pendente', NOW())
+                INSERT INTO pedidos
+                (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id_pedido
                 """,
-                (
-                    data.get("clientId"),
-                    delivery_date,
-                    data.get("comments", ""),
-                    data.get("discount", 0),
-                    data.get("totalPrice", 0),
-                ),
+                (client_id, now, delivery_date, comments, discount, total_price, "Pendente"),
             )
             pedido_id = cur.fetchone()["id_pedido"]
 
-            for service in data.get("services", []):
+            for s in services:
+                service_id = s.get("id")
+                qty = s.get("quantity") or 1
+                desc = s.get("description")
                 cur.execute(
                     """
-                    INSERT INTO pedido_servicos (id_pedido, id_service, quantity, description, status)
-                    VALUES (%s, %s, %s, %s, 'Pendente')
+                    INSERT INTO pedido_servicos
+                    (id_pedido, id_service, quantity, description, status)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
-                    (
-                        pedido_id,
-                        service.get("id"),
-                        service.get("quantity", 1),
-                        service.get("description", ""),
-                    ),
+                    (pedido_id, service_id, qty, desc, "Pendente"),
                 )
 
     conn.close()
-    return jsonify({"message": "Pedido criado com sucesso", "pedido_id": pedido_id}), 201
+    return jsonify({"pedido_id": pedido_id})
 
-
-# -----------------------
-# ADMIN Dashboard Stats
-# -----------------------
-@app.route("/admin/stats", methods=["GET"])
+@app.get("/pedidos/stats")
 @handle_errors
-@role_required("admin")
-def admin_stats():
+def pedidos_stats():
     conn = get_db_connection()
     if conn is None:
         return jsonify({"error": "Erro de conexão"}), 500
 
-    hoje = date.today()
-    primeiro_dia_mes = hoje.replace(day=1)
+    today = date.today()
 
     with conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT COUNT(*) AS total
-                FROM pedidos
-                WHERE status = 'Pendente' AND data_prevista = %s
+                SELECT COUNT(ps.id_pedido_servico) AS pending_today
+                FROM pedido_servicos ps
+                JOIN pedidos p ON ps.id_pedido = p.id_pedido
+                WHERE ps.status = 'Pendente'
+                  AND p.data_prevista = %s
                 """,
-                (hoje,),
+                (today,),
             )
-            pendentes_hoje = cur.fetchone()["total"] or 0
+            pending_today = (cur.fetchone() or {}).get("pending_today") or 0
 
             cur.execute(
                 """
-                SELECT COUNT(*) AS total
+                SELECT COUNT(id_pedido_servico) AS completed_today
                 FROM pedido_servicos
-                WHERE status = 'Concluído' AND DATE(data_conclusao) = %s
+                WHERE status = 'Concluído'
+                  AND DATE(data_conclusao) = %s
                 """,
-                (hoje,),
+                (today,),
             )
-            concluidos_hoje = cur.fetchone()["total"] or 0
-
-            cur.execute(
-                """
-                SELECT COUNT(*) AS total
-                FROM pedidos
-                WHERE status = 'Pendente' AND data_prevista < %s
-                """,
-                (hoje,),
-            )
-            atrasados = cur.fetchone()["total"] or 0
-
-            cur.execute(
-                """
-                SELECT COALESCE(SUM(preco_total), 0) AS total
-                FROM pedidos
-                WHERE DATE(data_entrada) = %s
-                """,
-                (hoje,),
-            )
-            faturamento_hoje = float(cur.fetchone()["total"] or 0)
-
-            cur.execute(
-                """
-                SELECT COALESCE(SUM(preco_total), 0) AS total
-                FROM pedidos
-                WHERE data_entrada >= %s
-                """,
-                (primeiro_dia_mes,),
-            )
-            faturamento_mes = float(cur.fetchone()["total"] or 0)
+            completed_today = (cur.fetchone() or {}).get("completed_today") or 0
 
     conn.close()
-    return jsonify(
-        {
-            "pendentes_hoje": int(pendentes_hoje),
-            "concluidos_hoje": int(concluidos_hoje),
-            "atrasados": int(atrasados),
-            "faturamento_hoje": faturamento_hoje,
-            "faturamento_mes": faturamento_mes,
-        }
-    ), 200
+    return jsonify({"pending_today": int(pending_today), "completed_today": int(completed_today)})
 
+@app.get("/pedidos/pendentes")
+@handle_errors
+def pedidos_pendentes():
+    selected_date = request.args.get("date")  # YYYY-MM-DD
+    search_term = (request.args.get("search") or "").strip()
+
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"error": "Erro de conexão"}), 500
+
+    query = """
+        SELECT
+            ps.id_pedido_servico,
+            ps.id_pedido,
+            ps.quantity,
+            ps.description,
+            ps.status,
+            s.name AS service_name,
+            c.name AS client_name,
+            TO_CHAR(p.data_prevista, 'YYYY-MM-DD') AS data_prevista
+        FROM pedido_servicos ps
+        JOIN pedidos p ON ps.id_pedido = p.id_pedido
+        JOIN services s ON ps.id_service = s.id_service
+        JOIN clients c ON p.id_client = c.id_client
+        WHERE ps.status = 'Pendente'
+    """
+    params = []
+
+    if selected_date:
+        query += " AND p.data_prevista = %s"
+        params.append(selected_date)
+
+    if search_term:
+        query += " AND (c.name ILIKE %s OR CAST(p.id_pedido AS TEXT) ILIKE %s)"
+        like = f"%{search_term}%"
+        params.extend([like, like])
+
+    query += " ORDER BY p.data_prevista, ps.id_pedido_servico"
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(query, tuple(params))
+            rows = cur.fetchall()
+
+    conn.close()
+    return jsonify(rows)
+
+@app.post("/pedidos/servico/<int:pedido_servico_id>/concluir")
+@handle_errors
+def concluir_pedido_servico(pedido_servico_id):
+    data = request.get_json(force=True, silent=True) or {}
+    seamstress_id = data.get("seamstressId")
+
+    if not seamstress_id:
+        return jsonify({"error": "seamstressId é obrigatório"}), 400
+
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"error": "Erro de conexão"}), 500
+
+    now = datetime.now()
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE pedido_servicos
+                SET status = 'Concluído',
+                    id_seamstress_conclusao = %s,
+                    data_conclusao = %s
+                WHERE id_pedido_servico = %s
+                """,
+                (seamstress_id, now, pedido_servico_id),
+            )
+            if cur.rowcount == 0:
+                return jsonify({"error": "Serviço do pedido não encontrado"}), 404
+
+    conn.close()
+    return jsonify({"ok": True})
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "7000"))
-    app.run(host="0.0.0.0", port=port, debug=True)
-
-@app.route("/debug-env")
-def debug_env():
-    return 
-
-
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")), debug=True)
