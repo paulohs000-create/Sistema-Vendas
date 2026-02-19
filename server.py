@@ -4,627 +4,866 @@ from functools import wraps
 
 import psycopg
 from psycopg.rows import dict_row
-from flask import Flask, jsonify, redirect, render_template, request, session, url_for
-from flask_cors import CORS
+from flask import (
+    Flask,
+    jsonify,
+    redirect,
+    render_template,
+    render_template_string,
+    request,
+    session,
+    url_for,
+)
 
-app = Flask(__name__, template_folder="templates")
-app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
-CORS(app)
+# -----------------------------------------------------------------------------
+# App
+# -----------------------------------------------------------------------------
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
 
-# ---------------------------
-# Database helpers (Postgres)
-# ---------------------------
-
-def get_database_url() -> str | None:
-    # Railway typically exposes DATABASE_URL. Some setups use POSTGRES_URL/PG* vars.
+# -----------------------------------------------------------------------------
+# Database
+# -----------------------------------------------------------------------------
+def _get_database_url() -> str | None:
+    # Railway normalmente injeta DATABASE_URL, mas vamos aceitar variações
     return (
         os.environ.get("DATABASE_URL")
+        or os.environ.get("DATABASE_URL".lower())
         or os.environ.get("POSTGRES_URL")
-        or os.environ.get("POSTGRESQL_URL")
-        or os.environ.get("DATABASE_PRIVATE_URL")
+        or os.environ.get("POSTGRES_URL".lower())
+        or os.environ.get("DATABASE_URL_INTERNAL")
+        or os.environ.get("DATABASE_URL_PUBLIC")
+        or os.environ.get("DATABASE_URL_PRIVATE")
+        or os.environ.get("DATABASE_URL_PRIVATE".lower())
     )
 
+
 def get_db_connection():
-    dsn = get_database_url()
-    if not dsn:
-        return None
-    # psycopg3 supports postgres:// and postgresql:// DSNs
-    return psycopg.connect(dsn, row_factory=dict_row)
+    db_url = _get_database_url()
+    if not db_url:
+        raise RuntimeError("DATABASE_URL não está definida no ambiente.")
+    # dict_row => cursor retorna dicts
+    return psycopg.connect(db_url, row_factory=dict_row)
 
-# ---------------------------
-# Error handling
-# ---------------------------
 
-def handle_errors(fn):
-    @wraps(fn)
+def handle_errors(f):
+    @wraps(f)
     def wrapper(*args, **kwargs):
         try:
-            return fn(*args, **kwargs)
+            return f(*args, **kwargs)
         except psycopg.Error as e:
-            return jsonify({"error": "Erro no banco de dados", "detail": str(e)}), 500
+            print(f"[DB ERROR] {request.method} {request.path}: {e}")
+            return jsonify({"error": "Erro de banco de dados."}), 500
         except Exception as e:
-            return jsonify({"error": "Erro interno", "detail": str(e)}), 500
+            print(f"[ERROR] {request.method} {request.path}: {e}")
+            return jsonify({"error": str(e)}), 500
+
     return wrapper
 
-# ---------------------------
-# Auth helpers
-# ---------------------------
 
-def _parse_user_pass(user_value: str | None, pass_value: str | None):
+# -----------------------------------------------------------------------------
+# Auth
+# -----------------------------------------------------------------------------
+def _env_user_pass(prefix: str) -> tuple[str | None, str | None]:
     """
-    Aceita:
-      - user_value no formato 'user:pass' (uma variável só), OU
-      - user_value='user' e pass_value='pass' (variáveis separadas)
+    Lê PREFIX_USER / PREFIX_PASS
+    Também aceita "PREFIX_USER" no formato "user:pass"
+    """
+    u = os.environ.get(f"{prefix}_USER")
+    p = os.environ.get(f"{prefix}_PASS")
 
-    Retorna (user, pass) ou (None, None).
-    """
-    if user_value and ":" in user_value and (pass_value is None or pass_value == ""):
-        u, p = user_value.split(":", 1)
-        return u.strip(), p
-    if user_value and pass_value:
-        return user_value.strip(), pass_value
-    if user_value and (pass_value is None):
-        # user fornecido mas senha ausente
-        return user_value.strip(), ""
-    return None, None
+    # fallback: se o cara colocou tudo em uma env só "user:pass"
+    if u and (":" in u) and (p is None):
+        parts = u.split(":", 1)
+        u = parts[0].strip()
+        p = parts[1].strip()
+    return u, p
+
 
 def get_users_config():
-    admin_u, admin_p = _parse_user_pass(os.environ.get("ADMIN_USER"), os.environ.get("ADMIN_PASS"))
-    caixa_u, caixa_p = _parse_user_pass(os.environ.get("CAIXA_USER"), os.environ.get("CAIXA_PASS"))
-    cost_u, cost_p = _parse_user_pass(os.environ.get("COSTUREIRA_USER"), os.environ.get("COSTUREIRA_PASS"))
+    admin_u, admin_p = _env_user_pass("ADMIN")
+    caixa_u, caixa_p = _env_user_pass("CAIXA")
+    cost_u, cost_p = _env_user_pass("COSTUREIRA")
 
-    return {
-        "admin": {"user": admin_u, "pass": admin_p},
-        "caixa": {"user": caixa_u, "pass": caixa_p},
-        "costureira": {"user": cost_u, "pass": cost_p},
-    }
+    users = {}
+    if admin_u and admin_p:
+        users[admin_u] = {"password": admin_p, "role": "admin"}
+    if caixa_u and caixa_p:
+        users[caixa_u] = {"password": caixa_p, "role": "caixa"}
+    if cost_u and cost_p:
+        users[cost_u] = {"password": cost_p, "role": "costureira"}
+    return users
 
-def login_required(role: str | None = None):
-    def decorator(fn):
-        @wraps(fn)
+
+def login_required(roles: list[str] | None = None):
+    def decorator(f):
+        @wraps(f)
         def wrapper(*args, **kwargs):
-            if not session.get("role"):
-                return redirect(url_for("login"))
-            if role and session.get("role") != role:
-                return jsonify({"error": "Acesso negado"}), 403
-            return fn(*args, **kwargs)
+            if not session.get("user"):
+                return redirect(url_for("login", next=request.path))
+            if roles:
+                if session.get("role") not in roles:
+                    return jsonify({"error": "Acesso negado."}), 403
+            return f(*args, **kwargs)
+
         return wrapper
+
     return decorator
 
-# ---------------------------
-# Page routes
-# ---------------------------
 
-@app.get("/")
-def index():
-    role = session.get("role")
-    if role == "admin":
-        return redirect(url_for("admin_dashboard"))
-    if role == "caixa":
-        return redirect(url_for("atendimento_page"))
-    if role == "costureira":
-        return redirect(url_for("costureiras_page"))
-    return redirect(url_for("login"))
+# -----------------------------------------------------------------------------
+# Simple login page (sem template extra)
+# -----------------------------------------------------------------------------
+LOGIN_HTML = """
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sistema de Vendas - Login</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen flex items-center justify-center bg-[#f7f3f1] p-4">
+  <div class="bg-white w-full max-w-md rounded-2xl shadow-2xl p-8">
+    <h1 class="text-3xl font-extrabold text-center text-purple-700">Sistema de Vendas</h1>
+    <p class="text-center text-gray-500 mt-1">Acesso restrito</p>
 
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if request.method == "GET":
-        return render_template("login.html")
+    {% if error %}
+      <div class="mt-6 bg-red-50 border border-red-200 text-red-700 p-3 rounded-lg text-sm">
+        {{ error }}
+      </div>
+    {% endif %}
 
-    username = (request.form.get("username") or "").strip()
-    password = (request.form.get("password") or "").strip()
+    <form class="mt-6 space-y-4" method="POST" action="/login">
+      <input type="hidden" name="next" value="{{ next_url or '' }}" />
+      <div>
+        <label class="block text-sm font-medium text-gray-700">Usuário</label>
+        <input name="username" value="{{ username or '' }}" class="mt-1 w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500" />
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">Senha</label>
+        <input name="password" type="password" class="mt-1 w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500" />
+      </div>
+      <button class="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 rounded-lg">
+        Entrar
+      </button>
+    </form>
 
-    users = get_users_config()
+    <div class="mt-4 text-center">
+      <a href="/logout?next=/login" class="text-sm text-gray-500 hover:text-gray-700 underline">Limpar sessão</a>
+    </div>
+  </div>
+</body>
+</html>
+"""
 
-    for role, conf in users.items():
-        if conf["user"] is None:
-            continue
-        if username == conf["user"] and password == (conf["pass"] or ""):
-            session.clear()
-            session["role"] = role
-            session["username"] = username
-            return redirect(url_for("index"))
 
-    return render_template("login.html", error="Usuário ou senha inválidos"), 401
+# -----------------------------------------------------------------------------
+# Admin dashboard (inline)
+# -----------------------------------------------------------------------------
+ADMIN_HTML = """
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Painel Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-[#0b1220] text-white">
+  <div class="flex min-h-screen">
+    <aside class="w-72 bg-[#0a1020] border-r border-white/10 p-4">
+      <div class="flex items-center gap-3 mb-6">
+        <div class="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center font-bold">SV</div>
+        <div>
+          <div class="font-bold leading-5">Sistema-Vendas</div>
+          <div class="text-xs text-white/60">Painel Admin</div>
+        </div>
+      </div>
 
-@app.get("/logout")
-def logout():
-    session.clear()
-    return redirect(url_for("login"))
+      <nav class="space-y-2">
+        <a href="/admin" class="block px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15">
+          🏠 <span class="ml-2">Dashboard</span>
+          <div class="text-xs text-white/60 ml-6">Resumo do sistema</div>
+        </a>
 
-@app.get("/admin")
-@login_required("admin")
-def admin_dashboard():
-    # precisa existir templates/admin.html no repo
-    return render_template("admin.html", username=session.get("username"))
+        <a href="/" class="block px-3 py-2 rounded-xl hover:bg-white/10">
+          🧾 <span class="ml-2">Atendimento (Caixa)</span>
+          <div class="text-xs text-white/60 ml-6">Criar pedidos</div>
+        </a>
 
-@app.get("/atendimento")
-@login_required()
-def atendimento_page():
-    # caixa ou admin
-    if session.get("role") not in ("caixa", "admin"):
-        return redirect(url_for("login"))
-    return render_template("atendimento.html")
+        <a href="/gerenciamento" class="block px-3 py-2 rounded-xl hover:bg-white/10">
+          🧩 <span class="ml-2">Gerenciamento</span>
+          <div class="text-xs text-white/60 ml-6">Serviços e costureiras</div>
+        </a>
 
-@app.get("/gerenciamento")
-@login_required()
-def gerenciamento_page():
-    # admin
-    if session.get("role") not in ("admin",):
-        return redirect(url_for("login"))
-    return render_template("Gerenciamento.html")
+        <a href="/costureiras" class="block px-3 py-2 rounded-xl hover:bg-white/10">
+          🧵 <span class="ml-2">Painel Costureiras</span>
+          <div class="text-xs text-white/60 ml-6">Pendências e conclusão</div>
+        </a>
 
-@app.get("/costureiras")
-@login_required()
-def costureiras_page():
-    # costureira ou admin
-    if session.get("role") not in ("costureira", "admin"):
-        return redirect(url_for("login"))
-    return render_template("costureiras.html")
+        <div class="mt-6 pt-4 border-t border-white/10 text-white/50 text-sm">
+          <div>Usuários (em breve)</div>
+          <div class="text-xs">Criar/editar/remover</div>
+          <div class="mt-3">Relatórios (em breve)</div>
+          <div class="text-xs">Vendas e produtividade</div>
+        </div>
+      </nav>
 
-# ---------------------------
-# Health & debug
-# ---------------------------
+      <div class="mt-6">
+        <a href="/logout?next=/login" class="block text-center px-4 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-500/30">
+          Sair
+        </a>
+      </div>
+    </aside>
 
+    <main class="flex-1 p-8">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="text-3xl font-bold">Dashboard</h1>
+          <p class="text-white/60 mt-1">Aqui vamos centralizar tudo do admin.</p>
+        </div>
+        <div class="text-white/70 text-sm">
+          Logado como: <span class="font-semibold text-white">{{ user }}</span>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-8">
+        <a href="/gerenciamento" class="p-5 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition">
+          <div class="font-bold text-lg">Gerenciamento</div>
+          <div class="text-white/60 text-sm mt-1">Cadastrar/editar serviços e costureiras</div>
+        </a>
+
+        <a href="/" class="p-5 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition">
+          <div class="font-bold text-lg">Atendimento</div>
+          <div class="text-white/60 text-sm mt-1">Criar pedidos e imprimir talão</div>
+        </a>
+
+        <a href="/costureiras" class="p-5 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition">
+          <div class="font-bold text-lg">Painel Costureiras</div>
+          <div class="text-white/60 text-sm mt-1">Acompanhar pendências e conclusões</div>
+        </a>
+      </div>
+
+      <div class="mt-6 p-6 rounded-2xl bg-white/5 border border-white/10">
+        <div class="font-bold text-lg">Próximos passos</div>
+        <ul class="list-disc ml-6 mt-2 text-white/70 text-sm space-y-1">
+          <li>Dashboard com indicadores (pendentes hoje, atrasados, concluídos, faturamento)</li>
+          <li>Gestão de usuários (admin cria caixa/costureira, reseta senha, desativa)</li>
+          <li>Relatórios e exportação</li>
+        </ul>
+      </div>
+    </main>
+  </div>
+</body>
+</html>
+"""
+
+
+# -----------------------------------------------------------------------------
+# Pages
+# -----------------------------------------------------------------------------
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
+    return jsonify({"ok": True}), 200
+
 
 @app.get("/db-test")
 @handle_errors
 def db_test():
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"ok": False, "error": "DATABASE_URL não configurada"}), 500
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT 1 AS one")
+            cur.execute("SELECT 1 AS ok;")
             row = cur.fetchone()
-    conn.close()
-    return jsonify({"ok": True, "result": row})
+    return jsonify({"db": "ok", "result": row}), 200
 
-# DEBUG TEMPORÁRIO (remova depois)
-@app.get("/debug-env")
-def debug_env():
-    return {
-        "ADMIN_USER": os.environ.get("ADMIN_USER"),
-        "ADMIN_PASS": "***" if os.environ.get("ADMIN_PASS") else None,
-        "CAIXA_USER": os.environ.get("CAIXA_USER"),
-        "CAIXA_PASS": "***" if os.environ.get("CAIXA_PASS") else None,
-        "COSTUREIRA_USER": os.environ.get("COSTUREIRA_USER"),
-        "COSTUREIRA_PASS": "***" if os.environ.get("COSTUREIRA_PASS") else None,
-    }
 
-# ---------------------------
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "GET":
+        next_url = request.args.get("next") or "/"
+        return render_template_string(LOGIN_HTML, error=None, next_url=next_url, username="")
+
+    users = get_users_config()
+    username = (request.form.get("username") or "").strip()
+    password = request.form.get("password") or ""
+    next_url = request.form.get("next") or "/"
+
+    if username in users and password == users[username]["password"]:
+        session["user"] = username
+        session["role"] = users[username]["role"]
+
+        # redireciona por perfil
+        role = session["role"]
+        if role == "admin":
+            return redirect("/admin")
+        if role == "costureira":
+            return redirect("/costureiras")
+        if role == "caixa":
+            return redirect("/")
+        return redirect(next_url)
+
+    return render_template_string(
+        LOGIN_HTML,
+        error="Usuário ou senha inválidos",
+        next_url=next_url,
+        username=username,
+    ), 401
+
+
+@app.get("/logout")
+def logout():
+    session.clear()
+    next_url = request.args.get("next") or "/login"
+    return redirect(next_url)
+
+
+@app.get("/admin")
+@login_required(["admin"])
+def admin_dashboard():
+    return render_template_string(ADMIN_HTML, user=session.get("user"))
+
+
+@app.get("/")
+@login_required(["admin", "caixa"])
+@handle_errors
+def serve_main_page():
+    return render_template("atendimento.html")
+
+
+@app.get("/gerenciamento")
+@login_required(["admin"])
+@handle_errors
+def serve_management_page():
+    return render_template("Gerenciamento.html")  # atenção: seu arquivo está com G maiúsculo no upload
+
+
+@app.get("/costureiras")
+@login_required(["admin", "costureira"])
+@handle_errors
+def serve_seamstress_page():
+    return render_template("costureiras.html")
+
+
+# -----------------------------------------------------------------------------
 # API - Clients
-# ---------------------------
-
+# -----------------------------------------------------------------------------
 @app.get("/clients/<phone>")
 @handle_errors
 def get_client_by_phone(phone):
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id_client, name, phone, nif FROM clients WHERE phone = %s",
+                "SELECT id_client, name, nif FROM clients WHERE phone = %s",
                 (phone,),
             )
             row = cur.fetchone()
 
-    conn.close()
+    if row:
+        return jsonify({"id": row["id_client"], "name": row["name"], "nif": row["nif"]}), 200
+    return jsonify({"error": "Cliente não encontrado."}), 404
 
-    if not row:
-        return jsonify({"error": "Cliente não encontrado"}), 404
-
-    return jsonify(
-        {
-            "id": row["id_client"],
-            "name": row["name"],
-            "phone": row["phone"],
-            "nif": row.get("nif"),
-        }
-    )
 
 @app.post("/clients")
 @handle_errors
-def create_client():
-    data = request.get_json(force=True, silent=True) or {}
+def add_client():
+    data = request.get_json(force=True) or {}
     name = (data.get("name") or "").strip()
     phone = (data.get("phone") or "").strip()
     nif = (data.get("nif") or "").strip() or None
 
     if not name or not phone:
-        return jsonify({"error": "Nome e telefone são obrigatórios"}), 400
+        return jsonify({"error": "Nome e telefone são obrigatórios."}), 400
 
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO clients (name, phone, nif) VALUES (%s, %s, %s) RETURNING id_client",
                 (name, phone, nif),
             )
             new_id = cur.fetchone()["id_client"]
+        conn.commit()
 
-    conn.close()
-    return jsonify({"id": new_id})
+    return jsonify({"message": "Cliente cadastrado com sucesso", "id": new_id}), 201
+
 
 @app.put("/clients/<int:client_id>/nif")
 @handle_errors
 def update_client_nif(client_id):
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(force=True) or {}
     nif = (data.get("nif") or "").strip()
     if not nif:
-        return jsonify({"error": "NIF é obrigatório"}), 400
+        return jsonify({"error": "O NIF é obrigatório."}), 400
 
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE clients SET nif = %s WHERE id_client = %s", (nif, client_id))
-            if cur.rowcount == 0:
-                return jsonify({"error": "Cliente não encontrado"}), 404
+            cur.execute(
+                "UPDATE clients SET nif = %s WHERE id_client = %s",
+                (nif, client_id),
+            )
+            updated = cur.rowcount
+        conn.commit()
 
-    conn.close()
-    return jsonify({"ok": True})
+    if updated == 0:
+        return jsonify({"error": "Cliente não encontrado."}), 404
+    return jsonify({"message": "NIF atualizado com sucesso."}), 200
 
-# ---------------------------
-# API - Services
-# ---------------------------
 
+# -----------------------------------------------------------------------------
+# API - Services (CRUD)
+# -----------------------------------------------------------------------------
 @app.get("/services")
 @handle_errors
-def list_services_grouped():
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
-    with conn:
+def get_services():
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT id_service, name, price, category FROM services ORDER BY category, name"
             )
             rows = cur.fetchall()
 
-    conn.close()
-
-    grouped = {}
+    services_by_category: dict[str, list[dict]] = {}
     for r in rows:
         cat = r["category"]
-        grouped.setdefault(cat, []).append(
+        services_by_category.setdefault(cat, []).append(
             {"id": r["id_service"], "nome": r["name"], "preco": float(r["price"])}
         )
+    return jsonify(services_by_category), 200
 
-    return jsonify(grouped)
 
 @app.post("/services")
 @handle_errors
-def create_service():
-    data = request.get_json(force=True, silent=True) or {}
+def add_service():
+    data = request.get_json(force=True) or {}
     name = (data.get("name") or "").strip()
     category = (data.get("category") or "").strip()
     price = data.get("price")
 
     if not name or not category or price is None:
-        return jsonify({"error": "name, category e price são obrigatórios"}), 400
+        return jsonify({"error": "Nome, categoria e preço são obrigatórios."}), 400
 
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO services (name, category, price) VALUES (%s, %s, %s) RETURNING id_service",
-                (name, category, price),
+                (name, category, float(price)),
             )
             new_id = cur.fetchone()["id_service"]
+        conn.commit()
 
-    conn.close()
-    return jsonify({"id": new_id})
+    return jsonify({"message": "Serviço adicionado com sucesso", "id": new_id}), 201
+
 
 @app.put("/services/<int:service_id>")
 @handle_errors
 def update_service(service_id):
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(force=True) or {}
     name = (data.get("name") or "").strip()
     category = (data.get("category") or "").strip()
     price = data.get("price")
 
     if not name or not category or price is None:
-        return jsonify({"error": "name, category e price são obrigatórios"}), 400
+        return jsonify({"error": "Nome, categoria e preço são obrigatórios."}), 400
 
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE services SET name=%s, category=%s, price=%s WHERE id_service=%s",
-                (name, category, price, service_id),
+                (name, category, float(price), service_id),
             )
-            if cur.rowcount == 0:
-                return jsonify({"error": "Serviço não encontrado"}), 404
+            updated = cur.rowcount
+        conn.commit()
 
-    conn.close()
-    return jsonify({"ok": True})
+    if updated == 0:
+        return jsonify({"error": "Serviço não encontrado."}), 404
+    return jsonify({"message": "Serviço atualizado com sucesso"}), 200
+
 
 @app.delete("/services/<int:service_id>")
 @handle_errors
 def delete_service(service_id):
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM services WHERE id_service=%s", (service_id,))
-            if cur.rowcount == 0:
-                return jsonify({"error": "Serviço não encontrado"}), 404
+            deleted = cur.rowcount
+        conn.commit()
 
-    conn.close()
-    return jsonify({"ok": True})
+    if deleted == 0:
+        return jsonify({"error": "Serviço não encontrado."}), 404
+    return jsonify({"message": "Serviço apagado com sucesso"}), 200
 
-# ---------------------------
-# API - Seamstresses (Costureiras)
-# ---------------------------
 
+# -----------------------------------------------------------------------------
+# API - Seamstresses (CRUD)
+# -----------------------------------------------------------------------------
 @app.get("/seamstresses")
 @handle_errors
-def list_seamstresses():
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
-    with conn:
+def get_seamstresses():
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT id_seamstress, name FROM seamstresses ORDER BY name")
             rows = cur.fetchall()
+    return jsonify([{"id": r["id_seamstress"], "name": r["name"]} for r in rows]), 200
 
-    conn.close()
-    return jsonify(rows)
 
 @app.post("/seamstresses")
 @handle_errors
-def create_seamstress():
-    data = request.get_json(force=True, silent=True) or {}
+def add_seamstress():
+    data = request.get_json(force=True) or {}
     name = (data.get("name") or "").strip()
     if not name:
-        return jsonify({"error": "Nome é obrigatório"}), 400
+        return jsonify({"error": "O nome é obrigatório."}), 400
 
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO seamstresses (name) VALUES (%s) RETURNING id_seamstress",
                 (name,),
             )
             new_id = cur.fetchone()["id_seamstress"]
+        conn.commit()
 
-    conn.close()
-    return jsonify({"id": new_id})
+    return jsonify({"message": "Costureira adicionada com sucesso", "id": new_id}), 201
+
 
 @app.put("/seamstresses/<int:seamstress_id>")
 @handle_errors
 def update_seamstress(seamstress_id):
-    data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(force=True) or {}
     name = (data.get("name") or "").strip()
     if not name:
-        return jsonify({"error": "Nome é obrigatório"}), 400
+        return jsonify({"error": "O nome é obrigatório."}), 400
 
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE seamstresses SET name=%s WHERE id_seamstress=%s",
                 (name, seamstress_id),
             )
-            if cur.rowcount == 0:
-                return jsonify({"error": "Costureira não encontrada"}), 404
+            updated = cur.rowcount
+        conn.commit()
 
-    conn.close()
-    return jsonify({"ok": True})
+    if updated == 0:
+        return jsonify({"error": "Costureira não encontrada."}), 404
+    return jsonify({"message": "Costureira atualizada com sucesso"}), 200
+
 
 @app.delete("/seamstresses/<int:seamstress_id>")
 @handle_errors
 def delete_seamstress(seamstress_id):
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM seamstresses WHERE id_seamstress=%s", (seamstress_id,))
-            if cur.rowcount == 0:
-                return jsonify({"error": "Costureira não encontrada"}), 404
+            deleted = cur.rowcount
+        conn.commit()
 
-    conn.close()
-    return jsonify({"ok": True})
+    if deleted == 0:
+        return jsonify({"error": "Costureira não encontrada."}), 404
+    return jsonify({"message": "Costureira apagada com sucesso"}), 200
 
-# ---------------------------
+
+# -----------------------------------------------------------------------------
 # API - Pedidos
-# ---------------------------
-
+# -----------------------------------------------------------------------------
 @app.post("/pedidos")
 @handle_errors
-def create_pedido():
-    data = request.get_json(force=True, silent=True) or {}
+def criar_pedido():
+    """
+    Espera o payload do atendimento.html:
+    {
+      clientId, deliveryDate, comments, discount, totalPrice,
+      services: [{id, quantity, description, preco, nome}]
+    }
+    """
+    data = request.get_json(force=True) or {}
 
     client_id = data.get("clientId")
-    delivery_date = data.get("deliveryDate")  # YYYY-MM-DD
+    delivery_date = data.get("deliveryDate")
     comments = data.get("comments")
-    discount = data.get("discount") or 0
-    total_price = data.get("totalPrice") or 0
+    discount = float(data.get("discount") or 0)
+    total_price = float(data.get("totalPrice") or 0)
     services = data.get("services") or []
 
     if not client_id or not delivery_date or not services:
-        return jsonify({"error": "clientId, deliveryDate e services são obrigatórios"}), 400
+        return jsonify({"error": "clientId, deliveryDate e services são obrigatórios."}), 400
 
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
-    now = datetime.now()
-
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO pedidos
-                (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status)
+                VALUES (%s, NOW(), %s, %s, %s, %s, %s)
                 RETURNING id_pedido
                 """,
-                (client_id, now, delivery_date, comments, discount, total_price, "Pendente"),
+                (int(client_id), delivery_date, comments, discount, total_price, "Pendente"),
             )
             pedido_id = cur.fetchone()["id_pedido"]
 
             for s in services:
                 service_id = s.get("id")
-                qty = s.get("quantity") or 1
+                qty = int(s.get("quantity") or 1)
                 desc = s.get("description")
                 cur.execute(
                     """
-                    INSERT INTO pedido_servicos
-                    (id_pedido, id_service, quantity, description, status)
+                    INSERT INTO pedido_servicos (id_pedido, id_service, quantity, description, status)
                     VALUES (%s, %s, %s, %s, %s)
                     """,
-                    (pedido_id, service_id, qty, desc, "Pendente"),
+                    (pedido_id, int(service_id), qty, desc, "Pendente"),
                 )
 
-    conn.close()
-    return jsonify({"pedido_id": pedido_id})
+        conn.commit()
+
+    return jsonify({"message": "Pedido criado com sucesso", "pedido_id": pedido_id}), 201
+
 
 @app.get("/pedidos/stats")
 @handle_errors
 def pedidos_stats():
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
     today = date.today()
 
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
+            # pendentes com entrega hoje
             cur.execute(
                 """
-                SELECT COUNT(ps.id_pedido_servico) AS pending_today
+                SELECT COUNT(*)::int AS c
                 FROM pedido_servicos ps
-                JOIN pedidos p ON ps.id_pedido = p.id_pedido
-                WHERE ps.status = 'Pendente'
-                  AND p.data_prevista = %s
+                JOIN pedidos p ON p.id_pedido = ps.id_pedido
+                WHERE p.data_prevista = %s
+                  AND COALESCE(ps.status,'') <> 'Concluído'
                 """,
                 (today,),
             )
-            pending_today = (cur.fetchone() or {}).get("pending_today") or 0
+            pending_today = cur.fetchone()["c"]
 
+            # concluídos hoje (pela data de conclusão)
             cur.execute(
                 """
-                SELECT COUNT(id_pedido_servico) AS completed_today
+                SELECT COUNT(*)::int AS c
                 FROM pedido_servicos
                 WHERE status = 'Concluído'
-                  AND DATE(data_conclusao) = %s
+                  AND data_conclusao::date = %s
                 """,
                 (today,),
             )
-            completed_today = (cur.fetchone() or {}).get("completed_today") or 0
+            completed_today = cur.fetchone()["c"]
 
-    conn.close()
-    return jsonify({"pending_today": int(pending_today), "completed_today": int(completed_today)})
+    return jsonify({"pending_today": pending_today, "completed_today": completed_today}), 200
+
+
+def _service_row_to_payload(r: dict) -> dict:
+    # normaliza datas para string pt-PT
+    data_prevista = r.get("data_prevista")
+    if isinstance(data_prevista, (datetime, date)):
+        data_prevista_str = data_prevista.strftime("%Y-%m-%d")
+    else:
+        data_prevista_str = None
+
+    data_conclusao = r.get("data_conclusao")
+    if isinstance(data_conclusao, datetime):
+        data_conclusao_str = data_conclusao.strftime("%Y-%m-%d %H:%M")
+    else:
+        data_conclusao_str = None
+
+    return {
+        "id_pedido_servico": r["id_pedido_servico"],
+        "id_pedido": r["id_pedido"],
+        "service_name": r["service_name"],
+        "client_name": r["client_name"],
+        "quantity": r["quantity"],
+        "status": r.get("status"),
+        "data_prevista": data_prevista_str,
+        "costureira_conclusao": r.get("costureira_conclusao"),
+        "data_conclusao": data_conclusao_str,
+    }
+
 
 @app.get("/pedidos/pendentes")
 @handle_errors
 def pedidos_pendentes():
-    selected_date = request.args.get("date")  # YYYY-MM-DD
-    search_term = (request.args.get("search") or "").strip()
-
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
-    query = """
-        SELECT
-            ps.id_pedido_servico,
-            ps.id_pedido,
-            ps.quantity,
-            ps.description,
-            ps.status,
-            s.name AS service_name,
-            c.name AS client_name,
-            TO_CHAR(p.data_prevista, 'YYYY-MM-DD') AS data_prevista
-        FROM pedido_servicos ps
-        JOIN pedidos p ON ps.id_pedido = p.id_pedido
-        JOIN services s ON ps.id_service = s.id_service
-        JOIN clients c ON p.id_client = c.id_client
-        WHERE ps.status = 'Pendente'
     """
-    params = []
+    Suporta:
+      - sem params -> retorna {atrasados, hoje, proximos}
+      - ?date=YYYY-MM-DD -> retorna lista simples para aquela data
+      - ?search=... -> retorna lista simples por busca (cliente ou pedido)
+    """
+    q_date = request.args.get("date")
+    q_search = (request.args.get("search") or "").strip()
 
-    if selected_date:
-        query += " AND p.data_prevista = %s"
-        params.append(selected_date)
+    base_sql = """
+      SELECT
+        ps.id_pedido_servico,
+        ps.id_pedido,
+        ps.quantity,
+        ps.status,
+        ps.data_conclusao,
+        p.data_prevista,
+        c.name AS client_name,
+        s.name AS service_name,
+        ss.name AS costureira_conclusao
+      FROM pedido_servicos ps
+      JOIN pedidos p ON p.id_pedido = ps.id_pedido
+      JOIN clients c ON c.id_client = p.id_client
+      JOIN services s ON s.id_service = ps.id_service
+      LEFT JOIN seamstresses ss ON ss.id_seamstress = ps.id_seamstress_conclusao
+    """
 
-    if search_term:
-        query += " AND (c.name ILIKE %s OR CAST(p.id_pedido AS TEXT) ILIKE %s)"
-        like = f"%{search_term}%"
-        params.extend([like, like])
-
-    query += " ORDER BY p.data_prevista, ps.id_pedido_servico"
-
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(query, tuple(params))
-            rows = cur.fetchall()
+            # Busca
+            if q_search:
+                if q_search.isdigit():
+                    cur.execute(
+                        base_sql
+                        + """
+                        WHERE ps.id_pedido = %s
+                        ORDER BY p.data_prevista ASC, ps.id_pedido_servico ASC
+                        """,
+                        (int(q_search),),
+                    )
+                else:
+                    cur.execute(
+                        base_sql
+                        + """
+                        WHERE c.name ILIKE %s
+                        ORDER BY p.data_prevista ASC, ps.id_pedido_servico ASC
+                        """,
+                        (f"%{q_search}%",),
+                    )
+                rows = cur.fetchall()
+                return jsonify([_service_row_to_payload(r) for r in rows]), 200
 
-    conn.close()
-    return jsonify(rows)
+            # Filtro por data (retorna lista simples)
+            if q_date:
+                cur.execute(
+                    base_sql
+                    + """
+                    WHERE p.data_prevista = %s
+                    ORDER BY ps.id_pedido_servico ASC
+                    """,
+                    (q_date,),
+                )
+                rows = cur.fetchall()
+                return jsonify([_service_row_to_payload(r) for r in rows]), 200
 
-@app.post("/pedidos/servico/<int:pedido_servico_id>/concluir")
+            # Sem filtros -> categorizado
+            today = date.today()
+
+            # atrasados
+            cur.execute(
+                base_sql
+                + """
+                WHERE p.data_prevista < %s
+                  AND COALESCE(ps.status,'') <> 'Concluído'
+                ORDER BY p.data_prevista ASC, ps.id_pedido_servico ASC
+                """,
+                (today,),
+            )
+            atrasados = [_service_row_to_payload(r) for r in cur.fetchall()]
+
+            # hoje
+            cur.execute(
+                base_sql
+                + """
+                WHERE p.data_prevista = %s
+                  AND COALESCE(ps.status,'') <> 'Concluído'
+                ORDER BY ps.id_pedido_servico ASC
+                """,
+                (today,),
+            )
+            hoje = [_service_row_to_payload(r) for r in cur.fetchall()]
+
+            # proximos
+            cur.execute(
+                base_sql
+                + """
+                WHERE p.data_prevista > %s
+                  AND COALESCE(ps.status,'') <> 'Concluído'
+                ORDER BY p.data_prevista ASC, ps.id_pedido_servico ASC
+                """,
+                (today,),
+            )
+            proximos = [_service_row_to_payload(r) for r in cur.fetchall()]
+
+    return jsonify({"atrasados": atrasados, "hoje": hoje, "proximos": proximos}), 200
+
+
+@app.put("/pedidos/servico/<int:pedido_servico_id>/concluir")
 @handle_errors
-def concluir_pedido_servico(pedido_servico_id):
-    data = request.get_json(force=True, silent=True) or {}
-    seamstress_id = data.get("seamstressId")
-
+def concluir_servico(pedido_servico_id):
+    """
+    Chamado pelo costureiras.html:
+      PUT /pedidos/servico/<id>/concluir
+      body: { id_seamstress: <id> }
+    """
+    data = request.get_json(force=True) or {}
+    seamstress_id = data.get("id_seamstress")
     if not seamstress_id:
-        return jsonify({"error": "seamstressId é obrigatório"}), 400
+        return jsonify({"error": "id_seamstress é obrigatório."}), 400
 
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"error": "Erro de conexão"}), 500
-
-    now = datetime.now()
-
-    with conn:
+    with get_db_connection() as conn:
         with conn.cursor() as cur:
+            # atualiza o serviço
             cur.execute(
                 """
                 UPDATE pedido_servicos
-                SET status = 'Concluído',
-                    id_seamstress_conclusao = %s,
-                    data_conclusao = %s
-                WHERE id_pedido_servico = %s
+                SET status='Concluído',
+                    id_seamstress_conclusao=%s,
+                    data_conclusao=NOW()
+                WHERE id_pedido_servico=%s
+                RETURNING id_pedido
                 """,
-                (seamstress_id, now, pedido_servico_id),
+                (int(seamstress_id), pedido_servico_id),
             )
-            if cur.rowcount == 0:
-                return jsonify({"error": "Serviço do pedido não encontrado"}), 404
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"error": "Serviço do pedido não encontrado."}), 404
 
-    conn.close()
-    return jsonify({"ok": True})
+            pedido_id = row["id_pedido"]
 
+            # se todos os serviços do pedido concluídos, marca pedido como concluído
+            cur.execute(
+                """
+                SELECT COUNT(*)::int AS pendentes
+                FROM pedido_servicos
+                WHERE id_pedido=%s
+                  AND COALESCE(status,'') <> 'Concluído'
+                """,
+                (pedido_id,),
+            )
+            pendentes = cur.fetchone()["pendentes"]
+            if pendentes == 0:
+                cur.execute(
+                    "UPDATE pedidos SET status='Concluído' WHERE id_pedido=%s",
+                    (pedido_id,),
+                )
+
+        conn.commit()
+
+    return jsonify({"message": "Serviço concluído com sucesso.", "pedido_id": pedido_id}), 200
+
+
+# -----------------------------------------------------------------------------
+# Local debug (NÃO usar em produção)
+# -----------------------------------------------------------------------------
+@app.get("/debug-env")
+def debug_env():
+    # cuidado: isso expõe infos — use só pra diagnosticar
+    return jsonify(
+        {
+            "ADMIN_USER": os.environ.get("ADMIN_USER"),
+            "CAIXA_USER": os.environ.get("CAIXA_USER"),
+            "COSTUREIRA_USER": os.environ.get("COSTUREIRA_USER"),
+            "HAS_ADMIN_PASS": bool(os.environ.get("ADMIN_PASS")),
+            "HAS_CAIXA_PASS": bool(os.environ.get("CAIXA_PASS")),
+            "HAS_COSTUREIRA_PASS": bool(os.environ.get("COSTUREIRA_PASS")),
+        }
+    ), 200
+
+
+# -----------------------------------------------------------------------------
+# Local run
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")), debug=True)
+    port = int(os.environ.get("PORT", "7000"))
+    app.run(host="0.0.0.0", port=port, debug=True)
