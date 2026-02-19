@@ -6,7 +6,7 @@
     <title>Sistema de Atendimento</title>
     <script src="https://cdn.tailwindcss.com"></script>
 
-    <!-- ✅ Mesmo método do teste: QZ Tray -->
+    <!-- QZ Tray -->
     <script src="https://cdn.jsdelivr.net/npm/qz-tray/qz-tray.js"></script>
 
     <style>
@@ -97,14 +97,6 @@
              <div class="text-right border-t pt-4">
                  <p class="text-2xl font-bold text-gray-800">Total: <span id="summary-total-price" class="text-purple-600">€ 0.00</span></p>
              </div>
-
-             <!-- ✅ Controle simples do nome da impressora -->
-             <div class="space-y-2 border-t pt-4">
-                <label for="printer-name" class="block text-gray-700 font-medium mb-1">Nome da Impressora (QZ Tray)</label>
-                <input type="text" id="printer-name" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
-                <p class="text-xs text-gray-500">Ex.: POS-80 (use o mesmo nome do Windows)</p>
-             </div>
-
              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4">
                 <button id="add-another-service-button" class="w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors">Adicionar Outro Serviço</button>
                 <button id="finalize-order-button" class="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition-colors">Finalizar Pedido</button>
@@ -131,13 +123,183 @@
     </div>
 
     <script>
-        // ✅ Railway/produção e local automaticamente
-        const API_URL = window.location.origin;
+        const API_URL = `${window.location.protocol}//${window.location.host}`;
 
-        // ✅ Impressora padrão (igual teste). Você pode mudar no input e ele salva em localStorage.
-        const PRINTER_DEFAULT = "POS-80";
+        // ============================
+        // CONFIG IMPRESSÃO (QZ)
+        // ============================
+        const PRINTER_NAME = "POS-80";   // <-- Troque se necessário (nome exato da impressora no Windows)
+        const VAT_RATE = 0.23;           // 23%
+        const PAPER_WIDTH_CHARS = 42;    // ajuste fino (80mm costuma 42~48, 58mm ~32)
 
-        const mainApplication = document.getElementById('main-application');
+        const STORE_INFO = {
+            title1: "Ponto e Linha - Arranjos",
+            title2: "e Costuras",
+            company: "Enseada Cosmica Unipessoal LDA",
+            address1: "Av Aristides de Sousa Mendes, 79 loja 5",
+            address2: "2785-741 S.D. Rana",
+            nif: "517725576",
+            email: "pontoelinhapt@gmail.com",
+            phone: "925 442 437",
+        };
+
+        async function conectarQZ() {
+            if (!window.qz) throw new Error("QZ Tray não carregou.");
+            if (!qz.websocket.isActive()) {
+                await qz.websocket.connect();
+            }
+        }
+
+        function line(char='-') {
+            return (char.repeat(PAPER_WIDTH_CHARS)).slice(0, PAPER_WIDTH_CHARS) + "\n";
+        }
+
+        function twoCol(left, right) {
+            const space = PAPER_WIDTH_CHARS - String(left).length - String(right).length;
+            return String(left) + " ".repeat(Math.max(1, space)) + String(right) + "\n";
+        }
+
+        function padLeft(s, n) {
+            s = String(s ?? "");
+            return (" ".repeat(n) + s).slice(-n);
+        }
+
+        function money(v) {
+            const num = Number(v || 0);
+            return num.toFixed(2).replace(".", ",");
+        }
+
+        function buildReceiptEscPos(receiptData, viaLabel) {
+            const RESET = "\x1B\x40";
+            const ALIGN_CENTER = "\x1B\x61\x01";
+            const ALIGN_LEFT = "\x1B\x61\x00";
+            const BOLD_ON = "\x1B\x45\x01";
+            const BOLD_OFF = "\x1B\x45\x00";
+
+            const nowStr = receiptData.currentDate || new Date().toLocaleString("pt-PT").replace(",", "");
+            const vencStr = receiptData.deliveryDate || "";
+
+            const docNumber = receiptData.documentNumber || ("OT " + String(receiptData.pedido_id).padStart(6, "0"));
+            const docType = receiptData.documentType || "Orcamento";
+
+            const clientNif = receiptData.clientNif ? receiptData.clientNif : "---------";
+            const clientName = receiptData.clientName || "";
+            const clientMorada = receiptData.clientAddressOrNotes || (receiptData.notes || "");
+
+            const discount = Number(receiptData.discount || 0);
+            const total = Number(receiptData.totalPrice || 0);
+
+            const base = total / (1 + VAT_RATE);
+            const iva = total - base;
+
+            const out = [];
+
+            out.push(RESET);
+
+            out.push(ALIGN_CENTER);
+            out.push(BOLD_ON);
+            out.push(STORE_INFO.title1 + "\n");
+            out.push(STORE_INFO.title2 + "\n");
+            out.push(BOLD_OFF);
+            out.push(STORE_INFO.company + "\n");
+            out.push(STORE_INFO.address1 + "\n");
+            out.push(STORE_INFO.address2 + "\n");
+            out.push("NIF: " + STORE_INFO.nif + "\n");
+            out.push(STORE_INFO.email + "\n");
+            out.push("Tel.: " + STORE_INFO.phone + "\n");
+            out.push("\n");
+
+            out.push(ALIGN_CENTER);
+            out.push(STORE_INFO.title1 + " " + STORE_INFO.title2 + "\n");
+            out.push(line("-"));
+
+            out.push(ALIGN_LEFT);
+            out.push(twoCol(docType, docNumber));
+            out.push(line("-"));
+            out.push(twoCol("Original", nowStr));
+            out.push(twoCol("Vencimento", vencStr));
+            out.push("\n");
+
+            out.push("NIF: " + clientNif + "\n");
+            out.push("Nome: " + clientName + "\n");
+            if (clientMorada && String(clientMorada).trim()) {
+                out.push("Morada: " + String(clientMorada).trim() + "\n");
+            }
+            out.push("\n");
+
+            out.push(line("-"));
+            out.push(twoCol("Referencia Produto", "Total"));
+            out.push("Qtd. x Preco (IVA)\n");
+            out.push(line("-"));
+
+            (receiptData.services || []).forEach((it, idx) => {
+                const qty = Number(it.quantity || 1);
+                const unit = Number(it.unitPrice || 0);
+                const itemTotal = Number(it.itemTotal || (qty * unit));
+
+                const ref = `${String(receiptData.pedido_id).padStart(6, "0")}-${String(idx + 1).padStart(2, "0")}`;
+
+                out.push(twoCol(ref, money(itemTotal)));
+                out.push((it.name || "") + "\n");
+
+                out.push("  " + `${qty} x ${money(unit)} (23%)` + "\n");
+
+                if (it.description && String(it.description).trim()) {
+                    out.push("  " + String(it.description).trim() + "\n");
+                }
+                out.push("\n");
+            });
+
+            out.push(line("-"));
+
+            out.push(BOLD_ON);
+            out.push(twoCol("Total", "Eur " + money(total)));
+            out.push(BOLD_OFF);
+            out.push("\n");
+
+            out.push(line("-"));
+            out.push("IVA        Base        IVA        Total\n");
+            out.push(twoCol("23%", padLeft(money(base), 10) + "  " + padLeft(money(iva), 6) + "  " + padLeft(money(total), 6)));
+            out.push(line("-"));
+            out.push("\n");
+
+            // ✅ FRASE QUE VOCÊ PEDIU (logo após o valor/IVA)
+            out.push(ALIGN_CENTER);
+            out.push("Este documento nao serve de fatura\n");
+            out.push("\n");
+
+            // Via
+            out.push(ALIGN_CENTER);
+            out.push(viaLabel + "\n");
+            out.push("\n\n\n");
+
+            out.push(ALIGN_LEFT);
+
+            return out;
+        }
+
+        async function printWithQZ(receiptData) {
+            await conectarQZ();
+            const config = qz.configs.create(PRINTER_NAME);
+
+            const viaCliente = buildReceiptEscPos(receiptData, "VIA CLIENTE");
+            const viaLoja = buildReceiptEscPos(receiptData, "VIA LOJA");
+
+            const CUT = "\x1D\x56\x00";
+
+            const payload = [
+                ...viaCliente,
+                CUT,
+                ...viaLoja,
+                CUT
+            ];
+
+            await qz.print(config, payload);
+        }
+
+        // ============================
+        // APP (Atendimento)
+        // ============================
         const clientSection = document.getElementById('client-section');
         const serviceSection = document.getElementById('service-section');
         const orderSummarySection = document.getElementById('order-summary-section');
@@ -167,125 +329,12 @@
         const modalConfirmButton = document.getElementById('modal-confirm-button');
         const nifCheckbox = document.getElementById('nif-checkbox');
         const nifDetailsContainer = document.getElementById('nif-details-container');
-        const printerNameInput = document.getElementById('printer-name');
 
-        // Carrega nome da impressora salvo
-        printerNameInput.value = localStorage.getItem("printer_name") || PRINTER_DEFAULT;
-        printerNameInput.addEventListener("change", () => {
-            localStorage.setItem("printer_name", printerNameInput.value.trim() || PRINTER_DEFAULT);
-        });
-        
         let allServicesData = {};
-        let currentClient = null; // {id_client, name, phone, nif}
+        let currentClient = null;
         let selectedServices = [];
         let currentServiceAction = null;
 
-        // ---------------------------------------------------------------------
-        // ✅ QZ TRAY - mesmo método do teste
-        // ---------------------------------------------------------------------
-        async function conectarQZ() {
-            if (typeof qz === "undefined") {
-                throw new Error("QZ Tray não carregou. Verifique internet/JS.");
-            }
-            if (!qz.websocket.isActive()) {
-                await qz.websocket.connect();
-            }
-        }
-
-        function padRight(text, width) {
-            const s = String(text);
-            if (s.length >= width) return s.slice(0, width);
-            return s + " ".repeat(width - s.length);
-        }
-
-        function moneyEUR(value) {
-            const n = Number(value || 0);
-            return n.toFixed(2) + "€";
-        }
-
-        function formatDateTimePT() {
-            return new Date().toLocaleString("pt-PT").replace(",", "");
-        }
-
-        function formatDatePT(yyyy_mm_dd) {
-            if (!yyyy_mm_dd) return "";
-            // input date vem "YYYY-MM-DD"
-            const d = new Date(yyyy_mm_dd + "T00:00:00");
-            return d.toLocaleDateString("pt-PT");
-        }
-
-        function buildReceiptLines({ via, pedido_id, clientName, clientNif, currentDate, deliveryDate, services, discount, totalPrice }) {
-            // ESC/POS raw (igual teste)
-            const lines = [];
-            lines.push('\x1B\x40'); // reset
-            lines.push('        SISTEMA VENDAS\n');
-            lines.push(padRight(`        ${via}\n`, 0));
-            lines.push('--------------------------\n');
-            if (pedido_id) lines.push(`Pedido: ${pedido_id}\n`);
-            lines.push('Data: ' + currentDate + '\n');
-            if (deliveryDate) lines.push('Entrega: ' + deliveryDate + '\n');
-            lines.push('--------------------------\n');
-            lines.push(`Cliente: ${clientName}\n`);
-            if (clientNif) lines.push(`NIF: ${clientNif}\n`);
-            lines.push('--------------------------\n');
-
-            // Itens: "Qtd x Nome" e total item na direita (simples)
-            // Como sua impressora é 58mm, mantemos linhas curtas.
-            services.forEach(s => {
-                const qty = s.quantity || 1;
-                const name = s.name || "";
-                const itemTotal = s.itemTotal || "0.00";
-                const left = `${qty}x ${name}`.slice(0, 16);
-                const right = moneyEUR(itemTotal);
-                const space = " ".repeat(Math.max(1, 26 - left.length - right.length));
-                lines.push(left + space + right + "\n");
-                if (s.description) {
-                    lines.push(("  " + s.description).slice(0, 26) + "\n");
-                }
-            });
-
-            lines.push('--------------------------\n');
-            if (Number(discount) > 0) {
-                const d = moneyEUR(discount);
-                const left = "Desconto";
-                const space = " ".repeat(Math.max(1, 26 - left.length - d.length));
-                lines.push(left + space + d + "\n");
-            }
-            const t = moneyEUR(totalPrice);
-            const leftT = "TOTAL:";
-            const spaceT = " ".repeat(Math.max(1, 26 - leftT.length - t.length));
-            lines.push(leftT + spaceT + t + "\n");
-
-            lines.push('\n');
-            lines.push('Obrigado!\n');
-            lines.push('\n\n\n\n');
-            return lines;
-        }
-
-        async function imprimirTermica(receiptData) {
-            const printerName = (printerNameInput.value.trim() || PRINTER_DEFAULT);
-
-            await conectarQZ();
-
-            // Mesmo do teste: config por nome da impressora
-            const config = qz.configs.create(printerName);
-
-            const dadosCliente = buildReceiptLines({ ...receiptData, via: "VIA CLIENTE" });
-            const dadosLoja = buildReceiptLines({ ...receiptData, via: "VIA LOJA" });
-
-            const payload = [
-                ...dadosCliente,
-                '\x1D\x56\x00', // corte 1ª via
-                ...dadosLoja,
-                '\x1D\x56\x00'  // corte 2ª via
-            ];
-
-            await qz.print(config, payload);
-        }
-
-        // ---------------------------------------------------------------------
-        // Fluxo do sistema
-        // ---------------------------------------------------------------------
         const handleClientSearch = async () => {
             const phone = telefoneInput.value.trim();
             clientDetailsInputDiv.classList.add('hidden');
@@ -297,7 +346,7 @@
             }
             clientInfoParagraph.textContent = 'A buscar...';
             try {
-                const response = await fetch(`${API_URL}/clients/${encodeURIComponent(phone)}`);
+                const response = await fetch(`${API_URL}/clients/${phone}`);
                 if (response.status === 404) {
                     clientInfoParagraph.textContent = 'Cliente não encontrado. Por favor, preencha os dados para cadastro.';
                     clientInfoParagraph.className = 'text-blue-600 text-base font-semibold mt-3 h-6';
@@ -330,8 +379,7 @@
                 });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || 'Erro ao cadastrar.');
-
-                currentClient = { id_client: result.id_client, name: name, phone: phone, nif: nif };
+                currentClient = { id: result.id_client, id_client: result.id_client, name: name, nif: nif };
                 clientDetailsInputDiv.classList.add('hidden');
                 clientInfoParagraph.innerHTML = `Cliente cadastrado: <strong class="text-purple-700">${name}</strong>`;
                 clientInfoParagraph.className = 'text-green-600 text-base font-semibold mt-3 h-6';
@@ -355,7 +403,7 @@
                 alert(`Erro: ${error.message}`);
             }
         };
-        
+
         function displayServiceCategories(categories) {
             serviceCategoriesDiv.innerHTML = '';
             Object.keys(categories).forEach(category => {
@@ -408,9 +456,9 @@
             nifDetailsContainer.innerHTML = '';
             if (nifCheckbox.checked) {
                 if (currentClient && currentClient.nif) {
-                     nifDetailsContainer.innerHTML = `<p class="font-medium text-gray-800 bg-gray-100 p-3 rounded-lg">Contribuinte: ${currentClient.nif}</p>`;
+                    nifDetailsContainer.innerHTML = `<p class="font-medium text-gray-800 bg-gray-100 p-3 rounded-lg">Contribuinte: ${currentClient.nif}</p>`;
                 } else {
-                     nifDetailsContainer.innerHTML = `<label for="nif-input" class="block text-gray-700 font-medium mb-1">Nº Contribuinte</label><div class="flex space-x-2"><input type="text" id="nif-input" placeholder="999999999" class="w-full px-4 py-2 rounded-lg border border-gray-300"><button onclick="saveNif()" class="bg-indigo-600 text-white px-4 rounded-lg font-semibold hover:bg-indigo-700">Guardar</button></div><p id="nif-feedback" class="text-sm h-4 mt-1"></p>`;
+                    nifDetailsContainer.innerHTML = `<label for="nif-input" class="block text-gray-700 font-medium mb-1">Nº Contribuinte</label><div class="flex space-x-2"><input type="text" id="nif-input" placeholder="999999999" class="w-full px-4 py-2 rounded-lg border border-gray-300"><button onclick="saveNif()" class="bg-indigo-600 text-white px-4 rounded-lg font-semibold hover:bg-indigo-700">Guardar</button></div><p id="nif-feedback" class="text-sm h-4 mt-1"></p>`;
                 }
                 nifDetailsContainer.classList.remove('hidden');
             } else {
@@ -424,7 +472,8 @@
             const nif = nifInput.value.trim();
             if (!nif) { feedbackEl.textContent = 'Por favor, insira o NIF.'; feedbackEl.className = 'text-red-500 text-sm h-4 mt-1'; return; }
             try {
-                const response = await fetch(`${API_URL}/clients/${currentClient.id_client}/nif`, {
+                const clientId = currentClient.id_client || currentClient.id;
+                const response = await fetch(`${API_URL}/clients/${clientId}/nif`, {
                     method: 'PUT', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ nif: nif })
                 });
@@ -434,22 +483,22 @@
                 feedbackEl.textContent = 'NIF guardado com sucesso!';
                 feedbackEl.className = 'text-green-600 text-sm h-4 mt-1';
                 setTimeout(updateNifDisplay, 1500);
-            } catch(error) {
+            } catch (error) {
                 console.error(error);
                 feedbackEl.textContent = error.message;
                 feedbackEl.className = 'text-red-500 text-sm h-4 mt-1';
             }
         };
-        
+
         const addServiceToOrder = (service, quantity, description) => {
             selectedServices.push({ ...service, quantity, description });
             renderOrderSummary();
         };
-        
+
         const updateServiceInOrder = (index, quantity, description) => {
-             selectedServices[index].quantity = quantity;
-             selectedServices[index].description = description;
-             renderOrderSummary();
+            selectedServices[index].quantity = quantity;
+            selectedServices[index].description = description;
+            renderOrderSummary();
         };
 
         const removeService = (index) => {
@@ -461,7 +510,7 @@
         const editService = (index) => {
             openServiceModal('edit', selectedServices[index], index);
         };
-        
+
         const openServiceModal = (action, service, index = null) => {
             currentServiceAction = { action, service, index };
             modalTitle.textContent = action === 'add' ? 'Adicionar Detalhes' : 'Editar Detalhes';
@@ -469,7 +518,7 @@
             document.getElementById('service-description').value = service.description || '';
             serviceDetailsModal.classList.remove('hidden');
         };
-        
+
         const closeServiceModal = () => {
             serviceDetailsModal.classList.add('hidden');
             currentServiceAction = null;
@@ -483,19 +532,22 @@
             else if (action === 'edit') { updateServiceInOrder(index, quantity, description); }
             closeServiceModal();
         };
-        
+
         const finalizeOrder = async () => {
             const deliveryDate = document.getElementById('delivery-date').value;
             const comments = document.getElementById('order-comments').value;
             const discount = parseFloat(document.getElementById('discount-input').value) || 0;
+
             if (!deliveryDate) { alert('Por favor, selecione uma data de entrega prevista.'); return; }
 
             let subtotal = 0;
             selectedServices.forEach(s => { subtotal += s.preco * s.quantity; });
             const totalPrice = subtotal - discount;
 
+            const clientId = currentClient.id_client || currentClient.id;
+
             const orderData = {
-                clientId: currentClient.id_client,
+                clientId: clientId,
                 deliveryDate: deliveryDate,
                 comments: comments,
                 discount: discount,
@@ -517,39 +569,49 @@
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || 'Não foi possível criar o pedido.');
 
-                // ✅ Monta o recibo e imprime via QZ Tray (mesmo método do teste)
+                const now = new Date();
+                const currentDate = now.toLocaleString('pt-PT').replace(',', '');
+                const deliveryStr = new Date(orderData.deliveryDate + 'T00:00:00').toLocaleDateString('pt-PT');
+
+                const documentNumber = `OT ${String(result.pedido_id).padStart(6, "0")}`;
+                const documentType = "Orcamento";
+
                 const receiptData = {
                     pedido_id: result.pedido_id,
+                    documentType,
+                    documentNumber,
+                    currentDate: currentDate,
+                    deliveryDate: deliveryStr,
                     clientName: currentClient.name,
-                    clientNif: (nifCheckbox.checked ? (currentClient.nif || "") : ""),
-                    currentDate: formatDateTimePT(),
-                    deliveryDate: formatDatePT(orderData.deliveryDate),
+                    clientNif: currentClient.nif,
+                    clientAddressOrNotes: comments,
+                    notes: comments,
+                    subtotal: subtotal,
+                    discount: discount,
+                    totalPrice: totalPrice,
                     services: selectedServices.map(s => ({
                         quantity: s.quantity,
                         name: s.nome,
                         description: s.description,
+                        unitPrice: s.preco,
                         itemTotal: (s.preco * s.quantity)
-                    })),
-                    discount: orderData.discount,
-                    totalPrice: orderData.totalPrice
+                    }))
                 };
 
-                try {
-                    await imprimirTermica(receiptData);
-                    alert(`Pedido #${result.pedido_id} criado e impresso com sucesso!`);
-                    window.location.reload();
-                } catch (printErr) {
-                    console.error(printErr);
-                    alert(
-                        `Pedido #${result.pedido_id} criado, mas NÃO imprimiu.\n\n` +
-                        `Motivo: ${printErr.message}\n\n` +
-                        `Confirme: QZ Tray aberto e impressora "${printerNameInput.value}" correta.`
-                    );
-                }
+                await printWithQZ(receiptData);
+
+                alert(`Pedido #${result.pedido_id} criado e impresso com sucesso!`);
+                window.location.reload();
 
             } catch (error) {
                 console.error(error);
-                alert(`Erro: ${error.message}`);
+                alert(
+                    `Erro: ${error.message}\n\n` +
+                    `Confirme:\n` +
+                    `- QZ Tray está aberto\n` +
+                    `- A impressora "${PRINTER_NAME}" existe no Windows\n` +
+                    `- Você autorizou o site no QZ (Allow/Trusted)\n`
+                );
             }
         };
 
@@ -561,17 +623,16 @@
         modalCancelButton.addEventListener('click', closeServiceModal);
         modalConfirmButton.addEventListener('click', confirmServiceAction);
         addAnotherServiceButton.addEventListener('click', () => {
-             orderSummarySection.classList.add('hidden');
-             serviceSection.classList.remove('hidden');
-             showCategories();
+            orderSummarySection.classList.add('hidden');
+            serviceSection.classList.remove('hidden');
+            showCategories();
         });
         finalizeOrderButton.addEventListener('click', finalizeOrder);
         nifCheckbox.addEventListener('change', updateNifDisplay);
         continueToServicesButton.addEventListener('click', loadServicesAndShowCategories);
 
-        // Tenta conectar no QZ assim que carregar (opcional)
         window.addEventListener("load", async () => {
-            try { await conectarQZ(); } catch (e) { /* sem alert no load */ }
+            try { await conectarQZ(); } catch (e) { /* silencioso */ }
         });
 
     </script>
