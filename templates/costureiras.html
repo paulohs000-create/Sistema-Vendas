@@ -67,8 +67,7 @@
     </div>
 
     <script>
-        // ✅ Corrigido para Railway / Prod / Local
-        const API_URL = window.location.origin;
+        const API_URL = `${window.location.protocol}//${window.location.host}`;
 
         const dateFilter = document.getElementById('date-filter');
         const searchInput = document.getElementById('search-input');
@@ -82,16 +81,28 @@
         const modalConfirmBtn = document.getElementById('modal-confirm-button');
         let serviceToCompleteId = null;
 
+        const safeJson = async (response) => {
+            const text = await response.text();
+            try { return JSON.parse(text); } catch { return { error: text || 'Resposta inválida.' }; }
+        };
+
+        const handleAuth = (response) => {
+            if (response.status === 401 || response.status === 403) {
+                window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
+                return true;
+            }
+            return false;
+        };
+
         const loadStats = async () => {
             try {
                 const response = await fetch(`${API_URL}/pedidos/stats`);
-                if (!response.ok) throw new Error('Erro ao carregar estatísticas.');
-                const stats = await response.json();
+                if (handleAuth(response)) return;
+                const stats = await safeJson(response);
+                if (!response.ok) throw new Error(stats.error || 'Erro ao carregar estatísticas.');
                 pendingCountEl.textContent = stats.pending_today;
                 completedCountEl.textContent = stats.completed_today;
-            } catch (error) {
-                console.error(error);
-            }
+            } catch (error) { console.error(error); }
         };
 
         const fetchAndRenderServices = async () => {
@@ -104,7 +115,9 @@
 
             try {
                 const response = await fetch(url);
-                const data = await response.json();
+                if (handleAuth(response)) return;
+
+                const data = await safeJson(response);
                 if (!response.ok) throw new Error(data.error || 'Não foi possível carregar os serviços.');
 
                 if (searchTerm) {
@@ -129,7 +142,7 @@
             ];
             let contentFound = false;
             categories.forEach(cat => {
-                if (cat.data && cat.data.length > 0) {
+                if(cat.data && cat.data.length > 0) {
                     contentFound = true;
                     const section = document.createElement('div');
                     section.innerHTML = `<h3 class="text-xl font-bold text-${cat.color}-600 border-b-2 border-${cat.color}-200 pb-2 mb-4">${cat.title}</h3>`;
@@ -186,9 +199,10 @@
             if (seamstressSelect.options.length <= 1) {
                 try {
                     const response = await fetch(`${API_URL}/seamstresses`);
+                    if (handleAuth(response)) return;
+                    const seamstresses = await safeJson(response);
                     if (!response.ok) throw new Error('Não foi possível carregar as costureiras.');
-                    const seamstresses = await response.json();
-                    seamstressSelect.innerHTML = '<option value="">Selecione o seu nome...</option>';
+                    seamstressSelect.innerHTML = '<option value="">Selecione o seu nome.</option>';
                     seamstresses.forEach(s => {
                         const option = document.createElement('option');
                         option.value = s.id;
@@ -214,7 +228,8 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ id_seamstress: seamstressSelect.value })
                 });
-                const data = await response.json();
+                if (handleAuth(response)) return;
+                const data = await safeJson(response);
                 if (!response.ok) throw new Error(data.error || 'Falha ao atualizar o serviço.');
                 closeCompleteModal();
                 await fetchAndRenderServices();
@@ -238,7 +253,6 @@
         searchInput.addEventListener('keyup', (e) => { if (e.key === 'Enter') handleSearch(); });
         modalCancelBtn.addEventListener('click', closeCompleteModal);
         modalConfirmBtn.addEventListener('click', confirmCompletion);
-
         document.addEventListener('DOMContentLoaded', () => {
             loadStats();
             fetchAndRenderServices();
