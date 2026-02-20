@@ -1,5 +1,5 @@
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import wraps
 
 import psycopg
@@ -21,6 +21,7 @@ from flask import (
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
 
+
 # -----------------------------------------------------------------------------
 # Database
 # -----------------------------------------------------------------------------
@@ -28,13 +29,13 @@ def _get_database_url() -> str | None:
     # Railway normalmente injeta DATABASE_URL, mas vamos aceitar variações
     return (
         os.environ.get("DATABASE_URL")
-        or os.environ.get("DATABASE_URL".lower())
+        or os.environ.get("database_url")
         or os.environ.get("POSTGRES_URL")
-        or os.environ.get("POSTGRES_URL".lower())
+        or os.environ.get("postgres_url")
         or os.environ.get("DATABASE_URL_INTERNAL")
         or os.environ.get("DATABASE_URL_PUBLIC")
         or os.environ.get("DATABASE_URL_PRIVATE")
-        or os.environ.get("DATABASE_URL_PRIVATE".lower())
+        or os.environ.get("database_url_private")
     )
 
 
@@ -159,7 +160,7 @@ LOGIN_HTML = """
 
 
 # -----------------------------------------------------------------------------
-# Admin dashboard (inline)
+# Admin dashboard (inline + fetch stats)
 # -----------------------------------------------------------------------------
 ADMIN_HTML = """
 <!DOCTYPE html>
@@ -228,7 +229,37 @@ ADMIN_HTML = """
         </div>
       </div>
 
+      <!-- KPIs -->
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-8">
+        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
+          <div class="text-white/60 text-sm">Pendentes hoje</div>
+          <div id="kpi-pendentes-hoje" class="text-3xl font-extrabold mt-1">—</div>
+        </div>
+        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
+          <div class="text-white/60 text-sm">Concluídos hoje</div>
+          <div id="kpi-concluidos-hoje" class="text-3xl font-extrabold mt-1">—</div>
+        </div>
+        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
+          <div class="text-white/60 text-sm">Atrasados</div>
+          <div id="kpi-atrasados" class="text-3xl font-extrabold mt-1">—</div>
+        </div>
+
+        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
+          <div class="text-white/60 text-sm">Pedidos criados hoje</div>
+          <div id="kpi-pedidos-hoje" class="text-3xl font-extrabold mt-1">—</div>
+        </div>
+        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
+          <div class="text-white/60 text-sm">Faturamento hoje</div>
+          <div id="kpi-fat-hoje" class="text-3xl font-extrabold mt-1">—</div>
+        </div>
+        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
+          <div class="text-white/60 text-sm">Faturamento mês</div>
+          <div id="kpi-fat-mes" class="text-3xl font-extrabold mt-1">—</div>
+        </div>
+      </div>
+
+      <!-- Quick links -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
         <a href="/gerenciamento" class="p-5 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition">
           <div class="font-bold text-lg">Gerenciamento</div>
           <div class="text-white/60 text-sm mt-1">Cadastrar/editar serviços e costureiras</div>
@@ -245,16 +276,103 @@ ADMIN_HTML = """
         </a>
       </div>
 
+      <!-- Lists -->
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4 mt-6">
+        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
+          <div class="font-bold text-lg">Atrasados</div>
+          <div class="text-white/60 text-sm mt-1">Top 10</div>
+          <div id="list-atrasados" class="mt-4 space-y-3 text-sm text-white/80">Carregando...</div>
+        </div>
+
+        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
+          <div class="font-bold text-lg">Próximos 7 dias</div>
+          <div class="text-white/60 text-sm mt-1">Top 10</div>
+          <div id="list-proximos" class="mt-4 space-y-3 text-sm text-white/80">Carregando...</div>
+        </div>
+
+        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
+          <div class="font-bold text-lg">Últimos pedidos</div>
+          <div class="text-white/60 text-sm mt-1">Top 10</div>
+          <div id="list-ultimos" class="mt-4 space-y-3 text-sm text-white/80">Carregando...</div>
+        </div>
+      </div>
+
       <div class="mt-6 p-6 rounded-2xl bg-white/5 border border-white/10">
         <div class="font-bold text-lg">Próximos passos</div>
         <ul class="list-disc ml-6 mt-2 text-white/70 text-sm space-y-1">
-          <li>Dashboard com indicadores (pendentes hoje, atrasados, concluídos, faturamento)</li>
           <li>Gestão de usuários (admin cria caixa/costureira, reseta senha, desativa)</li>
           <li>Relatórios e exportação</li>
         </ul>
       </div>
     </main>
   </div>
+
+<script>
+  function eur(v){
+    if (v === null || v === undefined) return "—";
+    try {
+      return new Intl.NumberFormat('pt-PT', { style: 'currency', currency: 'EUR' }).format(Number(v));
+    } catch(e) {
+      return "€ " + v;
+    }
+  }
+
+  function itemLinhaPedido(p){
+    const dt = p.data_prevista ? String(p.data_prevista) : "—";
+    const total = (p.preco_total !== null && p.preco_total !== undefined) ? eur(p.preco_total) : "—";
+    const pend = (p.pendentes !== null && p.pendentes !== undefined) ? `${p.pendentes} pend.` : "";
+    return `
+      <div class="p-3 rounded-xl bg-white/5 border border-white/10">
+        <div class="flex items-center justify-between">
+          <div class="font-semibold">#${p.id_pedido} — ${p.client_name || ""}</div>
+          <div class="text-white/60">${dt}</div>
+        </div>
+        <div class="flex items-center justify-between mt-1 text-white/70">
+          <div>${pend}</div>
+          <div class="font-semibold">${total}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadAdminStats(){
+    try{
+      const r = await fetch("/admin/stats", { credentials: "same-origin" });
+      if(!r.ok){
+        throw new Error("Falha ao carregar stats: HTTP " + r.status);
+      }
+      const data = await r.json();
+
+      document.getElementById("kpi-pendentes-hoje").textContent = data.kpis.pending_today ?? "—";
+      document.getElementById("kpi-concluidos-hoje").textContent = data.kpis.completed_today ?? "—";
+      document.getElementById("kpi-atrasados").textContent = data.kpis.overdue ?? "—";
+      document.getElementById("kpi-pedidos-hoje").textContent = data.kpis.orders_today ?? "—";
+      document.getElementById("kpi-fat-hoje").textContent = eur(data.kpis.revenue_today);
+      document.getElementById("kpi-fat-mes").textContent = eur(data.kpis.revenue_month);
+
+      const atrasados = data.lists.overdue || [];
+      const proximos = data.lists.next7 || [];
+      const ultimos = data.lists.latest || [];
+
+      const elA = document.getElementById("list-atrasados");
+      elA.innerHTML = atrasados.length ? atrasados.map(itemLinhaPedido).join("") : '<div class="text-white/60">Nenhum.</div>';
+
+      const elP = document.getElementById("list-proximos");
+      elP.innerHTML = proximos.length ? proximos.map(itemLinhaPedido).join("") : '<div class="text-white/60">Nenhum.</div>';
+
+      const elU = document.getElementById("list-ultimos");
+      elU.innerHTML = ultimos.length ? ultimos.map(itemLinhaPedido).join("") : '<div class="text-white/60">Nenhum.</div>';
+
+    }catch(e){
+      console.error(e);
+      document.getElementById("list-atrasados").innerHTML = '<div class="text-red-300">Erro ao carregar.</div>';
+      document.getElementById("list-proximos").innerHTML = '<div class="text-red-300">Erro ao carregar.</div>';
+      document.getElementById("list-ultimos").innerHTML = '<div class="text-red-300">Erro ao carregar.</div>';
+    }
+  }
+
+  loadAdminStats();
+</script>
 </body>
 </html>
 """
@@ -293,7 +411,6 @@ def login():
         session["user"] = username
         session["role"] = users[username]["role"]
 
-        # redireciona por perfil
         role = session["role"]
         if role == "admin":
             return redirect("/admin")
@@ -324,6 +441,191 @@ def admin_dashboard():
     return render_template_string(ADMIN_HTML, user=session.get("user"))
 
 
+@app.get("/admin/stats")
+@login_required(["admin"])
+@handle_errors
+def admin_stats():
+    today = date.today()
+    start_month = today.replace(day=1)
+    next7 = today + timedelta(days=7)
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # KPI: pendentes hoje (serviços)
+            cur.execute(
+                """
+                SELECT COUNT(*)::int AS c
+                FROM pedido_servicos ps
+                JOIN pedidos p ON p.id_pedido = ps.id_pedido
+                WHERE p.data_prevista = %s
+                  AND COALESCE(ps.status,'') <> 'Concluído'
+                """,
+                (today,),
+            )
+            pending_today = cur.fetchone()["c"]
+
+            # KPI: concluídos hoje (serviços)
+            cur.execute(
+                """
+                SELECT COUNT(*)::int AS c
+                FROM pedido_servicos
+                WHERE status = 'Concluído'
+                  AND data_conclusao::date = %s
+                """,
+                (today,),
+            )
+            completed_today = cur.fetchone()["c"]
+
+            # KPI: atrasados (serviços pendentes com data prevista < hoje)
+            cur.execute(
+                """
+                SELECT COUNT(*)::int AS c
+                FROM pedido_servicos ps
+                JOIN pedidos p ON p.id_pedido = ps.id_pedido
+                WHERE p.data_prevista < %s
+                  AND COALESCE(ps.status,'') <> 'Concluído'
+                """,
+                (today,),
+            )
+            overdue = cur.fetchone()["c"]
+
+            # KPI: pedidos criados hoje
+            cur.execute(
+                """
+                SELECT COUNT(*)::int AS c
+                FROM pedidos
+                WHERE data_entrada::date = %s
+                """,
+                (today,),
+            )
+            orders_today = cur.fetchone()["c"]
+
+            # KPI: faturamento hoje (se preco_total existir)
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(preco_total),0)::float AS v
+                FROM pedidos
+                WHERE data_entrada::date = %s
+                """,
+                (today,),
+            )
+            revenue_today = float(cur.fetchone()["v"] or 0)
+
+            # KPI: faturamento mês
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(preco_total),0)::float AS v
+                FROM pedidos
+                WHERE data_entrada::date >= %s
+                  AND data_entrada::date <= %s
+                """,
+                (start_month, today),
+            )
+            revenue_month = float(cur.fetchone()["v"] or 0)
+
+            # LISTA: atrasados (top 10 por pedido)
+            cur.execute(
+                """
+                SELECT
+                  p.id_pedido,
+                  c.name AS client_name,
+                  p.data_prevista,
+                  p.preco_total,
+                  (
+                    SELECT COUNT(*)::int
+                    FROM pedido_servicos ps2
+                    WHERE ps2.id_pedido = p.id_pedido
+                      AND COALESCE(ps2.status,'') <> 'Concluído'
+                  ) AS pendentes
+                FROM pedidos p
+                JOIN clients c ON c.id_client = p.id_client
+                WHERE p.data_prevista < %s
+                  AND COALESCE(p.status,'') <> 'Concluído'
+                ORDER BY p.data_prevista ASC, p.id_pedido ASC
+                LIMIT 10
+                """,
+                (today,),
+            )
+            list_overdue = cur.fetchall()
+
+            # LISTA: próximos 7 dias (top 10)
+            cur.execute(
+                """
+                SELECT
+                  p.id_pedido,
+                  c.name AS client_name,
+                  p.data_prevista,
+                  p.preco_total,
+                  (
+                    SELECT COUNT(*)::int
+                    FROM pedido_servicos ps2
+                    WHERE ps2.id_pedido = p.id_pedido
+                      AND COALESCE(ps2.status,'') <> 'Concluído'
+                  ) AS pendentes
+                FROM pedidos p
+                JOIN clients c ON c.id_client = p.id_client
+                WHERE p.data_prevista >= %s
+                  AND p.data_prevista <= %s
+                  AND COALESCE(p.status,'') <> 'Concluído'
+                ORDER BY p.data_prevista ASC, p.id_pedido ASC
+                LIMIT 10
+                """,
+                (today, next7),
+            )
+            list_next7 = cur.fetchall()
+
+            # LISTA: últimos pedidos (top 10)
+            cur.execute(
+                """
+                SELECT
+                  p.id_pedido,
+                  c.name AS client_name,
+                  p.data_prevista,
+                  p.preco_total,
+                  (
+                    SELECT COUNT(*)::int
+                    FROM pedido_servicos ps2
+                    WHERE ps2.id_pedido = p.id_pedido
+                      AND COALESCE(ps2.status,'') <> 'Concluído'
+                  ) AS pendentes
+                FROM pedidos p
+                JOIN clients c ON c.id_client = p.id_client
+                ORDER BY p.id_pedido DESC
+                LIMIT 10
+                """
+            )
+            list_latest = cur.fetchall()
+
+    def _pedido_list_row(r: dict) -> dict:
+        dp = r.get("data_prevista")
+        dp_str = dp.strftime("%Y-%m-%d") if isinstance(dp, (date, datetime)) else None
+        return {
+            "id_pedido": r.get("id_pedido"),
+            "client_name": r.get("client_name"),
+            "data_prevista": dp_str,
+            "preco_total": float(r.get("preco_total") or 0) if r.get("preco_total") is not None else None,
+            "pendentes": r.get("pendentes"),
+        }
+
+    return jsonify(
+        {
+            "kpis": {
+                "pending_today": pending_today,
+                "completed_today": completed_today,
+                "overdue": overdue,
+                "orders_today": orders_today,
+                "revenue_today": revenue_today,
+                "revenue_month": revenue_month,
+            },
+            "lists": {
+                "overdue": [_pedido_list_row(x) for x in list_overdue],
+                "next7": [_pedido_list_row(x) for x in list_next7],
+                "latest": [_pedido_list_row(x) for x in list_latest],
+            },
+        }
+    ), 200
+
+
 @app.get("/")
 @login_required(["admin", "caixa"])
 @handle_errors
@@ -335,7 +637,8 @@ def serve_main_page():
 @login_required(["admin"])
 @handle_errors
 def serve_management_page():
-    return render_template("Gerenciamento.html")  # atenção: seu arquivo está com G maiúsculo no upload
+    # atenção: seu arquivo no GitHub está "Gerenciamento.html" (G maiúsculo)
+    return render_template("Gerenciamento.html")
 
 
 @app.get("/costureiras")
@@ -349,6 +652,7 @@ def serve_seamstress_page():
 # API - Clients
 # -----------------------------------------------------------------------------
 @app.get("/clients/<phone>")
+@login_required(["admin", "caixa"])
 @handle_errors
 def get_client_by_phone(phone):
     with get_db_connection() as conn:
@@ -365,6 +669,7 @@ def get_client_by_phone(phone):
 
 
 @app.post("/clients")
+@login_required(["admin", "caixa"])
 @handle_errors
 def add_client():
     data = request.get_json(force=True) or {}
@@ -388,6 +693,7 @@ def add_client():
 
 
 @app.put("/clients/<int:client_id>/nif")
+@login_required(["admin", "caixa"])
 @handle_errors
 def update_client_nif(client_id):
     data = request.get_json(force=True) or {}
@@ -413,6 +719,7 @@ def update_client_nif(client_id):
 # API - Services (CRUD)
 # -----------------------------------------------------------------------------
 @app.get("/services")
+@login_required(["admin", "caixa"])
 @handle_errors
 def get_services():
     with get_db_connection() as conn:
@@ -432,6 +739,7 @@ def get_services():
 
 
 @app.post("/services")
+@login_required(["admin"])
 @handle_errors
 def add_service():
     data = request.get_json(force=True) or {}
@@ -455,6 +763,7 @@ def add_service():
 
 
 @app.put("/services/<int:service_id>")
+@login_required(["admin"])
 @handle_errors
 def update_service(service_id):
     data = request.get_json(force=True) or {}
@@ -480,6 +789,7 @@ def update_service(service_id):
 
 
 @app.delete("/services/<int:service_id>")
+@login_required(["admin"])
 @handle_errors
 def delete_service(service_id):
     with get_db_connection() as conn:
@@ -497,6 +807,7 @@ def delete_service(service_id):
 # API - Seamstresses (CRUD)
 # -----------------------------------------------------------------------------
 @app.get("/seamstresses")
+@login_required(["admin", "costureira"])
 @handle_errors
 def get_seamstresses():
     with get_db_connection() as conn:
@@ -507,6 +818,7 @@ def get_seamstresses():
 
 
 @app.post("/seamstresses")
+@login_required(["admin"])
 @handle_errors
 def add_seamstress():
     data = request.get_json(force=True) or {}
@@ -527,6 +839,7 @@ def add_seamstress():
 
 
 @app.put("/seamstresses/<int:seamstress_id>")
+@login_required(["admin"])
 @handle_errors
 def update_seamstress(seamstress_id):
     data = request.get_json(force=True) or {}
@@ -549,6 +862,7 @@ def update_seamstress(seamstress_id):
 
 
 @app.delete("/seamstresses/<int:seamstress_id>")
+@login_required(["admin"])
 @handle_errors
 def delete_seamstress(seamstress_id):
     with get_db_connection() as conn:
@@ -566,6 +880,7 @@ def delete_seamstress(seamstress_id):
 # API - Pedidos
 # -----------------------------------------------------------------------------
 @app.post("/pedidos")
+@login_required(["admin", "caixa"])
 @handle_errors
 def criar_pedido():
     """
@@ -617,6 +932,7 @@ def criar_pedido():
 
 
 @app.get("/pedidos/stats")
+@login_required(["admin", "costureira"])
 @handle_errors
 def pedidos_stats():
     today = date.today()
@@ -652,7 +968,6 @@ def pedidos_stats():
 
 
 def _service_row_to_payload(r: dict) -> dict:
-    # normaliza datas para string pt-PT
     data_prevista = r.get("data_prevista")
     if isinstance(data_prevista, (datetime, date)):
         data_prevista_str = data_prevista.strftime("%Y-%m-%d")
@@ -679,6 +994,7 @@ def _service_row_to_payload(r: dict) -> dict:
 
 
 @app.get("/pedidos/pendentes")
+@login_required(["admin", "costureira"])
 @handle_errors
 def pedidos_pendentes():
     """
@@ -788,12 +1104,13 @@ def pedidos_pendentes():
     return jsonify({"atrasados": atrasados, "hoje": hoje, "proximos": proximos}), 200
 
 
-@app.put("/pedidos/servico/<int:pedido_servico_id>/concluir")
+@app.route("/pedidos/servico/<int:pedido_servico_id>/concluir", methods=["PUT", "POST"])
+@login_required(["admin", "costureira"])
 @handle_errors
 def concluir_servico(pedido_servico_id):
     """
     Chamado pelo costureiras.html:
-      PUT /pedidos/servico/<id>/concluir
+      PUT/POST /pedidos/servico/<id>/concluir
       body: { id_seamstress: <id> }
     """
     data = request.get_json(force=True) or {}
@@ -844,11 +1161,12 @@ def concluir_servico(pedido_servico_id):
 
 
 # -----------------------------------------------------------------------------
-# Local debug (NÃO usar em produção)
+# Debug (protegido)
 # -----------------------------------------------------------------------------
 @app.get("/debug-env")
+@login_required(["admin"])
 def debug_env():
-    # cuidado: isso expõe infos — use só pra diagnosticar
+    # Não expõe senha; só valida se está carregando as envs
     return jsonify(
         {
             "ADMIN_USER": os.environ.get("ADMIN_USER"),
