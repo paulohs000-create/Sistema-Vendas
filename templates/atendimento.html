@@ -1222,7 +1222,33 @@ searchClientButton.addEventListener('click', handleClientSearch);
         const globalSearchInput = document.getElementById("global-service-search");
         const globalSearchBox = document.getElementById("global-search-results");
 
-        function normalizeText(s) {
+        
+        function extractServicesList(data) {
+            // Aceita formatos:
+            // 1) { services: [...] }
+            // 2) [ ... ]
+            // 3) { "Categoria": [ {id,nome,preco}, ... ], ... }
+            if (!data) return [];
+            if (Array.isArray(data)) return data;
+            if (data.services && Array.isArray(data.services)) return data.services;
+            // objeto por categoria
+            const out = [];
+            if (typeof data === "object") {
+                for (const [cat, items] of Object.entries(data)) {
+                    if (Array.isArray(items)) {
+                        for (const it of items) {
+                            out.push({
+                                ...it,
+                                categoria: it.categoria || it.category || cat,
+                            });
+                        }
+                    }
+                }
+            }
+            return out;
+        }
+
+function normalizeText(s) {
             return (s || "")
                 .toString()
                 .toLowerCase()
@@ -1263,7 +1289,7 @@ searchClientButton.addEventListener('click', handleClientSearch);
                 return;
             }
             const data = await ensureServicesCache();
-            const services = (data && data.services) ? data.services : (Array.isArray(data) ? data : []);
+            const services = extractServicesList(data);
             const flat = services.map(s => ({
                 id: s.id,
                 name: s.nome || s.name,
