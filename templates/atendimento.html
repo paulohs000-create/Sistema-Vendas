@@ -203,7 +203,7 @@
               <h3 class="text-xl font-bold text-gray-900">Editar cliente</h3>
               <p class="text-sm text-gray-500">Atualize nome, telefone e NIF.</p>
             </div>
-            <button id="edit-client-close" class="text-gray-400 hover:text-gray-700 text-2xl leading-none">&times;</button>
+            <button id="edit-client-close" type="button" class="text-gray-400 hover:text-gray-700 text-2xl leading-none">&times;</button>
           </div>
 
           <div class="mt-5 space-y-4">
@@ -594,111 +594,138 @@ async function loadClientsSearch(q) {
 }
 
 // ============================
-// Editar Cliente (modal)
+// Editar Cliente (modal) - versão robusta (delegação de eventos)
 // ============================
-function _editEl(id){ return document.getElementById(id); }
-function _must(id){
-    const el = _editEl(id);
-    if (!el) throw new Error("Modal de edição não encontrado (elemento: " + id + "). Atualize a página.");
-    return el;
+function getEditEl(id) { return document.getElementById(id); }
+function showEditModal() {
+    const m = getEditEl("edit-client-modal");
+    if (!m) return;
+    getEditEl("edit-client-error")?.classList.add("hidden");
+    getEditEl("edit-client-success")?.classList.add("hidden");
+    m.classList.remove("hidden");
+    m.classList.add("flex");
 }
-
-function openEditModal() {
-    _must("edit-client-error").classList.add("hidden");
-    _must("edit-client-success").classList.add("hidden");
-    _must("edit-client-modal").classList.remove("hidden");
-    _must("edit-client-modal").classList.add("flex");
+function hideEditModal() {
+    const m = getEditEl("edit-client-modal");
+    if (!m) return;
+    m.classList.add("hidden");
+    m.classList.remove("flex");
 }
-function closeEditModal() {
-    _must("edit-client-modal").classList.add("hidden");
-    _must("edit-client-modal").classList.remove("flex");
-}
-
 function setEditError(msg) {
-    _must("edit-client-success").classList.add("hidden");
-    _must("edit-client-error").textContent = msg;
-    _must("edit-client-error").classList.remove("hidden");
+    getEditEl("edit-client-success")?.classList.add("hidden");
+    const el = getEditEl("edit-client-error");
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.remove("hidden");
 }
 function setEditSuccess(msg) {
-    _must("edit-client-error").classList.add("hidden");
-    _must("edit-client-success").textContent = msg;
-    _must("edit-client-success").classList.remove("hidden");
+    getEditEl("edit-client-error")?.classList.add("hidden");
+    const el = getEditEl("edit-client-success");
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.remove("hidden");
 }
-
-_editEl("edit-client-close")?.addEventListener("click", closeEditModal);
-_editEl("edit-client-cancel")?.addEventListener("click", closeEditModal);
-_must("edit-client-modal")?.addEventListener("click", (e) => {
-    if (e.target === _must("edit-client-modal")) closeEditModal();
-});
 
 async function openEditClient(clientId) {
     const resp = await fetch(`${API_URL}/clients/by-id/${clientId}`);
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.error || "Falha ao carregar cliente.");
-    _must("edit-client-id").value = data.id;
-    _must("edit-client-name").value = data.name || "";
-    _must("edit-client-phone").value = data.phone || "";
-    _must("edit-client-nif").value = data.nif || "";
-    openEditModal();
-    setTimeout(() => _must("edit-client-name").focus(), 50);
+
+    getEditEl("edit-client-id").value = data.id;
+    getEditEl("edit-client-name").value = data.name || "";
+    getEditEl("edit-client-phone").value = data.phone || "";
+    getEditEl("edit-client-nif").value = data.nif || "";
+
+    showEditModal();
+    setTimeout(() => getEditEl("edit-client-name")?.focus(), 50);
 }
 
-_editEl("edit-client-save")?.addEventListener("click", async () => {
-    const clientId = _must("edit-client-id").value;
-    const payload = {
-        name: (_must("edit-client-name").value || "").trim(),
-        phone: (_must("edit-client-phone").value || "").trim(),
-        nif: (_must("edit-client-nif").value || "").trim(),
-    };
+// Delegação global (funciona mesmo se elementos forem recriados)
+document.addEventListener("click", async (e) => {
+    const t = e.target;
 
-    if (!payload.name || !payload.phone) {
-        setEditError("Nome e telefone são obrigatórios.");
+    // Abrir modal ao clicar em "Editar" da lista
+    const editBtn = t.closest?.(".edit-client-btn");
+    if (editBtn) {
+        const clientId = editBtn.getAttribute("data-client-id");
+        if (!clientId) return;
+        try {
+            await openEditClient(clientId);
+        } catch (err) {
+            console.error(err);
+            alert(err.message || "Erro ao abrir edição.");
+        }
         return;
     }
 
-    _editEl("edit-client-save").disabled = true;
-    _editEl("edit-client-save").classList.add("opacity-60");
+    // Fechar modal
+    if (t.id === "edit-client-close" || t.id === "edit-client-cancel") {
+        hideEditModal();
+        return;
+    }
 
-    try {
-        const resp = await fetch(`${API_URL}/clients/by-id/${clientId}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.error || "Falha ao salvar.");
+    // Clique fora do conteúdo (overlay)
+    if (t.id === "edit-client-modal") {
+        hideEditModal();
+        return;
+    }
 
-        setEditSuccess("Cliente atualizado com sucesso.");
-        // Recarrega a busca atual
-        const q = (document.getElementById("clients-search-input")?.value || "").trim();
-        if (q) await loadClientsSearch(q);
+    // Salvar
+    if (t.id === "edit-client-save") {
+        const btn = t;
+        const clientId = getEditEl("edit-client-id")?.value;
+        const payload = {
+            name: (getEditEl("edit-client-name")?.value || "").trim(),
+            phone: (getEditEl("edit-client-phone")?.value || "").trim(),
+            nif: (getEditEl("edit-client-nif")?.value || "").trim(),
+        };
 
-        // Atualiza o currentClient em memória (se for o mesmo)
-        if (currentClient && String(currentClient.id) === String(clientId)) {
-            currentClient.name = payload.name;
-            currentClient.phone = payload.phone;
-            currentClient.nif = payload.nif;
+        if (!payload.name || !payload.phone) {
+            setEditError("Nome e telefone são obrigatórios.");
+            return;
         }
 
-        setTimeout(closeEditModal, 650);
-    } catch (e) {
-        setEditError(e.message || "Erro ao salvar.");
-    } finally {
-        _editEl("edit-client-save").disabled = false;
-        _editEl("edit-client-save").classList.remove("opacity-60");
+        btn.disabled = true;
+        btn.classList.add("opacity-60");
+
+        try {
+            const resp = await fetch(`${API_URL}/clients/by-id/${clientId}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.error || "Falha ao salvar.");
+
+            setEditSuccess("Cliente atualizado com sucesso.");
+
+            // Recarregar lista atual
+            const q = (document.getElementById("clients-search-input")?.value || "").trim();
+            if (q) await loadClientsSearch(q);
+
+            // Atualizar currentClient se necessário
+            if (currentClient && String(currentClient.id) === String(clientId)) {
+                currentClient.name = payload.name;
+                currentClient.phone = payload.phone;
+                currentClient.nif = payload.nif;
+            }
+
+            setTimeout(hideEditModal, 650);
+        } catch (err) {
+            setEditError(err.message || "Erro ao salvar.");
+        } finally {
+            btn.disabled = false;
+            btn.classList.remove("opacity-60");
+        }
     }
 });
 
-// Delegação para botão "Editar"
-document.addEventListener("click", (e) => {
-    const btn = e.target.closest?.(".edit-client-btn");
-    if (!btn) return;
-    const clientId = btn.getAttribute("data-client-id");
-    if (!clientId) return;
-    openEditClient(clientId).catch(err => {
-        console.error(err);
-        alert(err.message || "Erro ao abrir edição.");
-    });
+// ESC fecha modal
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideEditModal();
+});
+
+
 });
 
 document.getElementById('clients-search-button')?.addEventListener('click', () => {
@@ -1135,8 +1162,8 @@ window.location.reload();
         });
 
     </script><div class="mt-6 flex gap-3 justify-end">
-            <button id="edit-client-cancel" class="px-4 py-2 rounded-xl border border-gray-300 hover:bg-gray-50">Cancelar</button>
-            <button id="edit-client-save" class="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-semibold">Salvar</button>
+            <button id="edit-client-cancel" type="button" class="px-4 py-2 rounded-xl border border-gray-300 hover:bg-gray-50">Cancelar</button>
+            <button id="edit-client-save" type="button" class="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-semibold">Salvar</button>
           </div>
         </div>
       </div>
