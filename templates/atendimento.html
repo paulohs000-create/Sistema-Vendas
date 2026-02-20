@@ -193,7 +193,40 @@
         </div>
     </div>
 
-    <script>
+    
+    
+      <!-- Modal editar cliente -->
+      <div id="edit-client-modal" class="fixed inset-0 bg-black/40 hidden items-center justify-center z-50">
+        <div class="bg-white w-full max-w-lg rounded-2xl shadow-xl p-6 mx-4">
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <h3 class="text-xl font-bold text-gray-900">Editar cliente</h3>
+              <p class="text-sm text-gray-500">Atualize nome, telefone e NIF.</p>
+            </div>
+            <button id="edit-client-close" class="text-gray-400 hover:text-gray-700 text-2xl leading-none">&times;</button>
+          </div>
+
+          <div class="mt-5 space-y-4">
+            <input type="hidden" id="edit-client-id" value="">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Nome</label>
+              <input id="edit-client-name" class="w-full border border-gray-300 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-400" placeholder="Nome do cliente">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Telefone</label>
+              <input id="edit-client-phone" class="w-full border border-gray-300 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-400" placeholder="Telefone">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">NIF (opcional)</label>
+              <input id="edit-client-nif" class="w-full border border-gray-300 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-400" placeholder="NIF">
+            </div>
+
+            <div id="edit-client-error" class="hidden text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3"></div>
+            <div id="edit-client-success" class="hidden text-sm text-green-700 bg-green-50 border border-green-200 rounded-xl p-3"></div>
+          </div>
+
+          
+<script>
         const API_URL = `${window.location.protocol}//${window.location.host}`;
 
 // ============================
@@ -563,64 +596,59 @@ async function loadClientsSearch(q) {
 // ============================
 // Editar Cliente (modal)
 // ============================
-const editModal = document.getElementById("edit-client-modal");
-const editClose = document.getElementById("edit-client-close");
-const editCancel = document.getElementById("edit-client-cancel");
-const editSave = document.getElementById("edit-client-save");
-
-const editIdEl = document.getElementById("edit-client-id");
-const editNameEl = document.getElementById("edit-client-name");
-const editPhoneEl = document.getElementById("edit-client-phone");
-const editNifEl = document.getElementById("edit-client-nif");
-const editErrEl = document.getElementById("edit-client-error");
-const editOkEl = document.getElementById("edit-client-success");
+function _editEl(id){ return document.getElementById(id); }
+function _must(id){
+    const el = _editEl(id);
+    if (!el) throw new Error("Modal de edição não encontrado (elemento: " + id + "). Atualize a página.");
+    return el;
+}
 
 function openEditModal() {
-    editErrEl.classList.add("hidden");
-    editOkEl.classList.add("hidden");
-    editModal.classList.remove("hidden");
-    editModal.classList.add("flex");
+    _must("edit-client-error").classList.add("hidden");
+    _must("edit-client-success").classList.add("hidden");
+    _must("edit-client-modal").classList.remove("hidden");
+    _must("edit-client-modal").classList.add("flex");
 }
 function closeEditModal() {
-    editModal.classList.add("hidden");
-    editModal.classList.remove("flex");
+    _must("edit-client-modal").classList.add("hidden");
+    _must("edit-client-modal").classList.remove("flex");
 }
 
 function setEditError(msg) {
-    editOkEl.classList.add("hidden");
-    editErrEl.textContent = msg;
-    editErrEl.classList.remove("hidden");
+    _must("edit-client-success").classList.add("hidden");
+    _must("edit-client-error").textContent = msg;
+    _must("edit-client-error").classList.remove("hidden");
 }
 function setEditSuccess(msg) {
-    editErrEl.classList.add("hidden");
-    editOkEl.textContent = msg;
-    editOkEl.classList.remove("hidden");
+    _must("edit-client-error").classList.add("hidden");
+    _must("edit-client-success").textContent = msg;
+    _must("edit-client-success").classList.remove("hidden");
 }
 
-editClose?.addEventListener("click", closeEditModal);
-editCancel?.addEventListener("click", closeEditModal);
-editModal?.addEventListener("click", (e) => {
-    if (e.target === editModal) closeEditModal();
+_editEl("edit-client-close")?.addEventListener("click", closeEditModal);
+_editEl("edit-client-cancel")?.addEventListener("click", closeEditModal);
+_must("edit-client-modal")?.addEventListener("click", (e) => {
+    if (e.target === _must("edit-client-modal")) closeEditModal();
 });
 
 async function openEditClient(clientId) {
     const resp = await fetch(`${API_URL}/clients/by-id/${clientId}`);
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.error || "Falha ao carregar cliente.");
-    editIdEl.value = data.id;
-    editNameEl.value = data.name || "";
-    editPhoneEl.value = data.phone || "";
-    editNifEl.value = data.nif || "";
+    _must("edit-client-id").value = data.id;
+    _must("edit-client-name").value = data.name || "";
+    _must("edit-client-phone").value = data.phone || "";
+    _must("edit-client-nif").value = data.nif || "";
     openEditModal();
-    setTimeout(() => editNameEl.focus(), 50);
+    setTimeout(() => _must("edit-client-name").focus(), 50);
 }
 
-editSave?.addEventListener("click", async () => {
-    const clientId = editIdEl.value;
+_editEl("edit-client-save")?.addEventListener("click", async () => {
+    const clientId = _must("edit-client-id").value;
     const payload = {
-        name: (editNameEl.value || "").trim(),
-        phone: (editPhoneEl.value || "").trim(),
-        nif: (editNifEl.value || "").trim(),
+        name: (_must("edit-client-name").value || "").trim(),
+        phone: (_must("edit-client-phone").value || "").trim(),
+        nif: (_must("edit-client-nif").value || "").trim(),
     };
 
     if (!payload.name || !payload.phone) {
@@ -628,8 +656,8 @@ editSave?.addEventListener("click", async () => {
         return;
     }
 
-    editSave.disabled = true;
-    editSave.classList.add("opacity-60");
+    _editEl("edit-client-save").disabled = true;
+    _editEl("edit-client-save").classList.add("opacity-60");
 
     try {
         const resp = await fetch(`${API_URL}/clients/by-id/${clientId}`, {
@@ -656,8 +684,8 @@ editSave?.addEventListener("click", async () => {
     } catch (e) {
         setEditError(e.message || "Erro ao salvar.");
     } finally {
-        editSave.disabled = false;
-        editSave.classList.remove("opacity-60");
+        _editEl("edit-client-save").disabled = false;
+        _editEl("edit-client-save").classList.remove("opacity-60");
     }
 });
 
@@ -1106,39 +1134,7 @@ window.location.reload();
             try { await conectarQZ(); } catch (e) { /* silencioso */ }
         });
 
-    </script>
-    
-      <!-- Modal editar cliente -->
-      <div id="edit-client-modal" class="fixed inset-0 bg-black/40 hidden items-center justify-center z-50">
-        <div class="bg-white w-full max-w-lg rounded-2xl shadow-xl p-6 mx-4">
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <h3 class="text-xl font-bold text-gray-900">Editar cliente</h3>
-              <p class="text-sm text-gray-500">Atualize nome, telefone e NIF.</p>
-            </div>
-            <button id="edit-client-close" class="text-gray-400 hover:text-gray-700 text-2xl leading-none">&times;</button>
-          </div>
-
-          <div class="mt-5 space-y-4">
-            <input type="hidden" id="edit-client-id" value="">
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Nome</label>
-              <input id="edit-client-name" class="w-full border border-gray-300 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-400" placeholder="Nome do cliente">
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Telefone</label>
-              <input id="edit-client-phone" class="w-full border border-gray-300 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-400" placeholder="Telefone">
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">NIF (opcional)</label>
-              <input id="edit-client-nif" class="w-full border border-gray-300 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-400" placeholder="NIF">
-            </div>
-
-            <div id="edit-client-error" class="hidden text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3"></div>
-            <div id="edit-client-success" class="hidden text-sm text-green-700 bg-green-50 border border-green-200 rounded-xl p-3"></div>
-          </div>
-
-          <div class="mt-6 flex gap-3 justify-end">
+    </script><div class="mt-6 flex gap-3 justify-end">
             <button id="edit-client-cancel" class="px-4 py-2 rounded-xl border border-gray-300 hover:bg-gray-50">Cancelar</button>
             <button id="edit-client-save" class="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-semibold">Salvar</button>
           </div>
