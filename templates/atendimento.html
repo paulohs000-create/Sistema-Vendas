@@ -1315,16 +1315,25 @@ function normalizeText(s) {
 globalSearchBox?.addEventListener("click", (e) => {
             const btn = e.target.closest("button[data-cat]");
             if (!btn) return;
+
             const cat = btn.getAttribute("data-cat");
             const name = btn.getAttribute("data-name");
             const price = parseFloat(btn.getAttribute("data-price") || "0") || 0;
 
+            // Define a categoria atual (para o botão "Avançar" e para contexto)
             currentCategory = cat;
+
+            // Adiciona o serviço direto ao pedido
             addServiceToOrder({ nome: name, preco: price, description: "", categoria: cat });
+
+            // Limpa UI de busca
             renderGlobalResults([]);
             if (globalSearchInput) globalSearchInput.value = "";
+
+            // Atualiza e navega para o resumo (SEM mexer na navegação lateral)
             renderOrderSummary();
-            showSection("order-summary-section");
+            serviceSection.classList.add('hidden');
+            orderSummarySection.classList.remove('hidden');
         });
 
         discountInput.addEventListener('input', renderOrderSummary);
