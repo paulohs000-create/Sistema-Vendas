@@ -6,11 +6,8 @@
     <title>Sistema de Atendimento</title>
     <script src="https://cdn.tailwindcss.com"></script>
 
-    <!-- QZ Tray (client-side) -->
-    <!-- Dependências recomendadas pelo QZ: Promise + SHA -->
-    <script src="https://cdn.jsdelivr.net/npm/rsvp@4/dist/rsvp.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/js-sha256@0.11.0/build/sha256.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/qz-tray@2.2.5/qz-tray.js"></script>
+    <!-- QZ Tray -->
+    <script src="https://cdn.jsdelivr.net/npm/qz-tray/qz-tray.js"></script>
 
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -22,17 +19,14 @@
 <body class="flex items-center justify-center min-h-screen p-4">
 
     <div id="main-application" class="bg-white p-8 sm:p-10 rounded-2xl shadow-2xl w-full max-w-2xl space-y-8">
-
+        
         <header id="main-header" class="text-center">
             <h1 class="text-3xl sm:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600">
                 Sistema de Atendimento
             </h1>
             <p class="text-gray-500 mt-2">Localize o cliente e selecione o serviço</p>
-
-            <!-- Status do QZ -->
-            <p id="qz-status" class="mt-3 text-xs text-gray-500"></p>
         </header>
-
+        
         <div id="client-section" class="space-y-6 fade-in">
             <h2 class="text-2xl font-semibold text-gray-800 border-b pb-3">1. Encontre o Cliente</h2>
             <div>
@@ -103,7 +97,22 @@
              <div class="text-right border-t pt-4">
                  <p class="text-2xl font-bold text-gray-800">Total: <span id="summary-total-price" class="text-purple-600">€ 0.00</span></p>
              </div>
-             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4">
+             <div class="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                <p class="font-semibold text-gray-800 mb-2">Impressão</p>
+                <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+                    <label class="inline-flex items-center gap-2">
+                        <input type="radio" name="print-mode" value="qz" class="h-4 w-4" checked>
+                        <span class="text-gray-700">QZ Tray (POS-80)</span>
+                    </label>
+                    <label class="inline-flex items-center gap-2">
+                        <input type="radio" name="print-mode" value="http" class="h-4 w-4">
+                        <span class="text-gray-700">HTTP (/print)</span>
+                    </label>
+                    <span id="print-mode-hint" class="text-sm text-gray-500 sm:ml-auto"></span>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4">
                 <button id="add-another-service-button" class="w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors">Adicionar Outro Serviço</button>
                 <button id="finalize-order-button" class="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition-colors">Finalizar Pedido</button>
              </div>
@@ -131,195 +140,272 @@
     <script>
         const API_URL = `${window.location.protocol}//${window.location.host}`;
 
-        // ---------------------------------------------------------------------
-        // QZ Tray CONFIG
-        // ---------------------------------------------------------------------
-        // Ajuste aqui se o nome exato no Windows/Mac/Linux for diferente
-        // (pode ser "POS-80", "POS 80", "POS80 Printer", etc.)
-        const QZ_PRINTER_PREFERRED = "POS-80";
+// ============================
+// MODO DE IMPRESSÃO
+// ============================
+// - "qz": imprime via QZ Tray (recomendado para POS-80)
+// - "http": envia para endpoint /print (caso exista no backend)
+let PRINT_MODE = "qz"; // padrão
 
-        const qzStatusEl = document.getElementById('qz-status');
+function setPrintMode(mode) {
+    PRINT_MODE = mode;
+    try { localStorage.setItem("print_mode", mode); } catch (e) {}
+}
 
-        // QZ precisa saber qual Promise usar e qual SHA usar
-        if (window.qz) {
-            try {
-                qz.api.setPromiseType(function(resolver) { return new RSVP.Promise(resolver); });
-                qz.api.setSha256Type(function(data) { return sha256(data); });
+function loadPrintMode() {
+    try {
+        const saved = localStorage.getItem("print_mode");
+        if (saved === "qz" || saved === "http") PRINT_MODE = saved;
+    } catch (e) {}
+}
 
-                // Sem assinatura (vai mostrar prompts do QZ, dependendo da configuração)
-                qz.security.setCertificatePromise(function(resolve, reject) { resolve(null); });
-                qz.security.setSignaturePromise(function(toSign) { return function(resolve, reject) { resolve(null); }; });
-            } catch (e) {
-                console.warn("Falha configurando QZ API:", e);
+// ============================
+// CABEÇALHO / RODAPÉ (TALÃO)
+// ============================
+// Ajuste aqui as linhas extras do topo e do fundo, mantendo alinhamento/ênfases.
+const RECEIPT_HEADER_EXTRA = [
+    // Exemplo (descomente e edite):
+    // { align: "center", bold: true, text: "INFORMAÇÃO DO TOPO (PRINT 1)" },
+    // { align: "center", bold: false, text: "Linha 2 do topo" },
+];
+
+const RECEIPT_FOOTER_EXTRA = [
+    // Exemplo (descomente e edite):
+    // { align: "center", bold: false, text: "INFORMAÇÃO DO RODAPÉ (PRINT 2)" },
+    // { align: "center", bold: false, text: "Obrigado pela preferência!" },
+];
+
+// ============================
+// NUMERAÇÃO DE DOCUMENTO (FR/OT)
+// ============================
+// ⚠️ Idealmente isso deve ser no BACKEND para ser 100% consistente entre computadores.
+// Aqui fazemos um contador simples por navegador via localStorage.
+function nextDocNumber(prefix, year) {
+    const key = `docCounter_${prefix}_${year}`;
+    let n = 0;
+    try { n = parseInt(localStorage.getItem(key) || "0", 10) || 0; } catch (e) {}
+    n += 1;
+    try { localStorage.setItem(key, String(n)); } catch (e) {}
+    return `${prefix} ${year}/${String(n).padStart(2, "0")}`;
+}
+
+
+
+        // ============================
+        // CONFIG IMPRESSÃO (QZ)
+        // ============================
+        const PRINTER_NAME = "POS-80";   // nome exato no Windows
+        const VAT_RATE = 0.23;           // 23%
+        const PAPER_WIDTH_CHARS = 42;    // 80mm costuma 42~48
+
+        const STORE_INFO = {
+            title1: "Ponto e Linha - Arranjos",
+            title2: "e Costuras",
+            company: "Enseada Cosmica Unipessoal LDA",
+            address1: "Av Aristides de Sousa Mendes, 79 loja 5",
+            address2: "2785-741 S.D. Rana",
+            nif: "517725576",
+            email: "pontoelinhapt@gmail.com",
+            phone: "925 442 437",
+        };
+
+        async function conectarQZ() {
+            if (!window.qz) throw new Error("QZ Tray não carregou.");
+            if (!qz.websocket.isActive()) {
+                await qz.websocket.connect();
             }
         }
 
-        async function ensureQZConnected() {
-            if (!window.qz) throw new Error("Biblioteca QZ não carregou (qz-tray.js).");
-            if (qz.websocket && qz.websocket.isActive()) return true;
+        function line(char='-') {
+            return (char.repeat(PAPER_WIDTH_CHARS)).slice(0, PAPER_WIDTH_CHARS) + "\n";
+        }
 
-            qzStatusEl.textContent = "QZ: a conectar...";
-            try {
-                await qz.websocket.connect({ retries: 2, delay: 1 });
-                qzStatusEl.textContent = "QZ: conectado ✅";
-                return true;
-            } catch (err) {
-                qzStatusEl.textContent = "QZ: não conectado ❌ (abra o QZ Tray)";
-                throw new Error("Não foi possível conectar ao QZ Tray. Verifique se o QZ Tray está instalado e aberto.");
+        function twoCol(left, right) {
+            const space = PAPER_WIDTH_CHARS - String(left).length - String(right).length;
+            return String(left) + " ".repeat(Math.max(1, space)) + String(right) + "\n";
+        }
+
+        function padLeft(s, n) {
+            s = String(s ?? "");
+            return (" ".repeat(n) + s).slice(-n);
+        }
+
+        function money(v) {
+            const num = Number(v || 0);
+            return num.toFixed(2).replace(".", ",");
+        }
+
+        function pushFormattedLines(out, lines) {
+            if (!Array.isArray(lines)) return;
+            const ALIGN_CENTER = "\x1B\x61\x01";
+            const ALIGN_LEFT = "\x1B\x61\x00";
+            const BOLD_ON = "\x1B\x45\x01";
+            const BOLD_OFF = "\x1B\x45\x00";
+            lines.forEach(l => {
+                if (!l || !l.text) return;
+                out.push((l.align === "center") ? ALIGN_CENTER : ALIGN_LEFT);
+                out.push(l.bold ? BOLD_ON : BOLD_OFF);
+                out.push(String(l.text) + "\n");
+                out.push(BOLD_OFF);
+            });
+            out.push(ALIGN_LEFT);
+        }
+
+        function buildReceiptEscPos(receiptData, viaLabel) {
+            const RESET = "\x1B\x40";
+            const ALIGN_CENTER = "\x1B\x61\x01";
+            const ALIGN_LEFT = "\x1B\x61\x00";
+            const BOLD_ON = "\x1B\x45\x01";
+            const BOLD_OFF = "\x1B\x45\x00";
+
+            const nowStr = receiptData.currentDate || new Date().toLocaleString("pt-PT").replace(",", "");
+            const vencStr = receiptData.deliveryDate || "";
+
+            // ✅ ajuste: tipo vira FATURA
+            const docType = receiptData.documentType || "Fatura";
+
+            // ✅ ajuste: remover "OT" do número (imprime só o número)
+            const docNumber = receiptData.documentNumber || String(receiptData.pedido_id).padStart(6, "0");
+
+            const clientNif = receiptData.clientNif ? receiptData.clientNif : "---------";
+            const clientName = receiptData.clientName || "";
+            const clientMorada = receiptData.clientAddressOrNotes || (receiptData.notes || "");
+
+            const total = Number(receiptData.totalPrice || 0);
+
+            const base = total / (1 + VAT_RATE);
+            const iva = total - base;
+
+            const out = [];
+
+            out.push(RESET);
+
+            out.push(ALIGN_CENTER);
+            out.push(BOLD_ON);
+            out.push(STORE_INFO.title1 + "\n");
+            out.push(STORE_INFO.title2 + "\n");
+            out.push(BOLD_OFF);
+            out.push(STORE_INFO.company + "\n");
+            out.push(STORE_INFO.address1 + "\n");
+            out.push(STORE_INFO.address2 + "\n");
+            out.push("NIF: " + STORE_INFO.nif + "\n");
+            out.push(STORE_INFO.email + "\n");
+            out.push("Tel.: " + STORE_INFO.phone + "\n");
+            out.push("\n");
+
+            // Linhas extras do cabeçalho (personalizável)
+            pushFormattedLines(out, RECEIPT_HEADER_EXTRA);
+            if (RECEIPT_HEADER_EXTRA.length) out.push("\n");
+
+            out.push(ALIGN_CENTER);
+            out.push(STORE_INFO.title1 + " " + STORE_INFO.title2 + "\n");
+            out.push(line("-"));
+
+            out.push(ALIGN_LEFT);
+            out.push(twoCol(docType, docNumber));
+            out.push(line("-"));
+            out.push(twoCol("Original", nowStr));
+            out.push(twoCol("Vencimento", vencStr));
+            out.push("\n");
+
+            out.push("NIF: " + clientNif + "\n");
+            out.push("Nome: " + clientName + "\n");
+            if (clientMorada && String(clientMorada).trim()) {
+                out.push("Morada: " + String(clientMorada).trim() + "\n");
             }
-        }
+            out.push("\n");
 
-        async function findBestPrinter() {
-            await ensureQZConnected();
+            out.push(line("-"));
+            out.push(twoCol("Referencia Produto", "Total"));
+            out.push("Qtd. x Preco (IVA)\n");
+            out.push(line("-"));
 
-            // 1) tenta achar pelo nome preferido
-            try {
-                const found = await qz.printers.find(QZ_PRINTER_PREFERRED);
-                if (found) return found;
-            } catch (e) {
-                // ignora e tenta outras estratégias
-            }
+            (receiptData.services || []).forEach((it, idx) => {
+                const qty = Number(it.quantity || 1);
+                const unit = Number(it.unitPrice || 0);
+                const itemTotal = Number(it.itemTotal || (qty * unit));
 
-            // 2) tenta variações comuns
-            const variants = ["POS 80", "POS80", "POS-80", "TM-T20", "EPSON", "XP-80"];
-            for (const v of variants) {
-                try {
-                    const found = await qz.printers.find(v);
-                    if (found) return found;
-                } catch (e) {}
-            }
+                const ref = `${String(receiptData.pedido_id).padStart(6, "0")}-${String(idx + 1).padStart(2, "0")}`;
 
-            // 3) fallback: impressora padrão do sistema
-            try {
-                const def = await qz.printers.getDefault();
-                if (def) return def;
-            } catch (e) {}
+                out.push(twoCol(ref, money(itemTotal)));
+                out.push((it.name || "") + "\n");
 
-            // 4) sem printer
-            throw new Error("Nenhuma impressora encontrada no QZ. Verifique o nome da impressora e se ela está instalada.");
-        }
+                out.push("  " + `${qty} x ${money(unit)} (23%)` + "\n");
 
-        function padRight(str, len) {
-            str = String(str ?? "");
-            if (str.length >= len) return str.slice(0, len);
-            return str + " ".repeat(len - str.length);
-        }
-
-        function formatMoneyEUR(value) {
-            const num = Number(value);
-            if (!isFinite(num)) return "0.00";
-            return num.toFixed(2);
-        }
-
-        function buildReceiptText(receipt) {
-            // 80mm costuma caber 48 colunas (depende do font da impressora)
-            const COLS = 48;
-            const line = "-".repeat(COLS);
-
-            const center = (text) => {
-                text = String(text ?? "");
-                if (text.length >= COLS) return text.slice(0, COLS);
-                const left = Math.floor((COLS - text.length) / 2);
-                const right = COLS - text.length - left;
-                return " ".repeat(left) + text + " ".repeat(right);
-            };
-
-            const lines = [];
-
-            // Cabeçalho (simples — depois ajustamos igual ao teu modelo)
-            lines.push(center("FATURA"));
-            lines.push(center("Sistema de Vendas"));
-            lines.push(line);
-
-            lines.push(`Pedido: #${receipt.pedido_id}`);
-            lines.push(`Data:   ${receipt.currentDate}`);
-            lines.push(`Entrega:${receipt.deliveryDate}`);
-            lines.push(line);
-
-            lines.push(`Cliente: ${receipt.clientName}`);
-            if (receipt.clientNif) lines.push(`NIF:     ${receipt.clientNif}`);
-            lines.push(line);
-
-            // Itens
-            lines.push(padRight("QTD  DESCRICAO", 34) + padRight("TOTAL", 14));
-            lines.push(line);
-
-            for (const it of (receipt.services || [])) {
-                const qty = String(it.quantity ?? 1);
-                const name = String(it.name ?? "").trim();
-                const desc = String(it.description ?? "").trim();
-                const itemTotal = formatMoneyEUR(it.itemTotal);
-
-                // 1ª linha: qty + nome
-                const left = `${qty}x ${name}`;
-                lines.push(padRight(left, 34) + padRight(`€ ${itemTotal}`, 14));
-
-                // 2ª linha opcional: descrição
-                if (desc) {
-                    const d = ("- " + desc);
-                    // quebra básica em múltiplas linhas
-                    let i = 0;
-                    while (i < d.length) {
-                        lines.push("  " + d.slice(i, i + (COLS - 2)));
-                        i += (COLS - 2);
-                    }
+                if (it.description && String(it.description).trim()) {
+                    out.push("  " + String(it.description).trim() + "\n");
                 }
-            }
-
-            lines.push(line);
-
-            const discount = formatMoneyEUR(receipt.discount || 0);
-            if (Number(discount) > 0) {
-                lines.push(padRight("Desconto", 34) + padRight(`- € ${discount}`, 14));
-            }
-            lines.push(padRight("TOTAL", 34) + padRight(`€ ${formatMoneyEUR(receipt.totalPrice)}`, 14));
-
-            lines.push(line);
-            lines.push(center("Obrigado!"));
-            lines.push(""); // linha em branco
-
-            // Comandos ESC/POS (corte de papel)
-            // init + feed + cut
-            const escposInit = "\x1B\x40";
-            const escposFeed = "\x1B\x64\x03"; // alimenta 3 linhas
-            const escposCut  = "\x1D\x56\x00"; // corte total
-
-            return escposInit + lines.join("\n") + "\n" + escposFeed + escposCut;
-        }
-
-        async function printViaQZ(receiptData) {
-            const printer = await findBestPrinter();
-            const config = qz.configs.create(printer, {
-                copies: 1
+                out.push("\n");
             });
 
-            const rawData = buildReceiptText(receiptData);
+            out.push(line("-"));
 
-            // Envia como RAW/PLAIN (ESC/POS dentro do texto)
-            const data = [{
-                type: 'raw',
-                format: 'plain',
-                data: rawData
-            }];
+            out.push(BOLD_ON);
+            out.push(twoCol("Total", "Eur " + money(total)));
+            out.push(BOLD_OFF);
+            out.push("\n");
 
-            qzStatusEl.textContent = `QZ: a imprimir em "${printer}"...`;
-            await qz.print(config, data);
-            qzStatusEl.textContent = `QZ: impresso ✅ (${printer})`;
+            out.push(line("-"));
+            out.push("IVA        Base        IVA        Total\n");
+            out.push(twoCol("23%", padLeft(money(base), 10) + "  " + padLeft(money(iva), 6) + "  " + padLeft(money(total), 6)));
+            out.push(line("-"));
+            out.push("\n");
+
+            // ✅ ajuste: removemos a frase “Este documento nao serve de fatura”
+
+                        // Linhas extras do rodapé (personalizável)
+            pushFormattedLines(out, RECEIPT_FOOTER_EXTRA);
+            if (RECEIPT_FOOTER_EXTRA.length) out.push("\n");
+
+            out.push(ALIGN_CENTER);
+            out.push(viaLabel + "\n");
+            out.push("\n\n\n");
+
+            out.push(ALIGN_LEFT);
+
+            return out;
         }
 
-        // tenta conectar assim que a página abre (não quebra se falhar)
-        document.addEventListener('DOMContentLoaded', async () => {
-            try {
-                await ensureQZConnected();
-            } catch (e) {
-                console.warn(e);
-            }
-        });
+        async function printWithQZ(receiptData) {
+            await conectarQZ();
+            const config = qz.configs.create(PRINTER_NAME);
 
-        // ---------------------------------------------------------------------
-        // Seu código original
-        // ---------------------------------------------------------------------
-        const mainApplication = document.getElementById('main-application');
+            const viaCliente = buildReceiptEscPos(receiptData, "VIA CLIENTE");
+            const viaLoja = buildReceiptEscPos(receiptData, "VIA LOJA");
+
+            const CUT = "\x1D\x56\x00";
+
+            const payload = [
+                ...viaCliente,
+                CUT,
+                ...viaLoja,
+                CUT
+            ];
+
+            await qz.print(config, payload);
+        }
+
+async function printReceipt(receiptData) {
+            if (PRINT_MODE === "http") {
+                // Backend precisa expor POST /print que receba receiptData e imprima no servidor/local.
+                const resp = await fetch(`${API_URL}/print`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(receiptData)
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.error || "Falha ao imprimir via HTTP.");
+                }
+                return;
+            }
+            // padrão: QZ
+            await printWithQZ(receiptData);
+        }
+
+                // ============================
+        // APP (Atendimento)
+        // ============================
         const clientSection = document.getElementById('client-section');
         const serviceSection = document.getElementById('service-section');
         const orderSummarySection = document.getElementById('order-summary-section');
@@ -399,7 +485,7 @@
                 });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || 'Erro ao cadastrar.');
-                currentClient = { id: result.id, name: name, nif: nif };
+                currentClient = { id: result.id_client, id_client: result.id_client, name: name, nif: nif };
                 clientDetailsInputDiv.classList.add('hidden');
                 clientInfoParagraph.innerHTML = `Cliente cadastrado: <strong class="text-purple-700">${name}</strong>`;
                 clientInfoParagraph.className = 'text-green-600 text-base font-semibold mt-3 h-6';
@@ -476,9 +562,9 @@
             nifDetailsContainer.innerHTML = '';
             if (nifCheckbox.checked) {
                 if (currentClient && currentClient.nif) {
-                     nifDetailsContainer.innerHTML = `<p class="font-medium text-gray-800 bg-gray-100 p-3 rounded-lg">Contribuinte: ${currentClient.nif}</p>`;
+                    nifDetailsContainer.innerHTML = `<p class="font-medium text-gray-800 bg-gray-100 p-3 rounded-lg">Contribuinte: ${currentClient.nif}</p>`;
                 } else {
-                     nifDetailsContainer.innerHTML = `<label for="nif-input" class="block text-gray-700 font-medium mb-1">Nº Contribuinte</label><div class="flex space-x-2"><input type="text" id="nif-input" placeholder="999999999" class="w-full px-4 py-2 rounded-lg border border-gray-300"><button onclick="saveNif()" class="bg-indigo-600 text-white px-4 rounded-lg font-semibold hover:bg-indigo-700">Guardar</button></div><p id="nif-feedback" class="text-sm h-4 mt-1"></p>`;
+                    nifDetailsContainer.innerHTML = `<label for="nif-input" class="block text-gray-700 font-medium mb-1">Nº Contribuinte</label><div class="flex space-x-2"><input type="text" id="nif-input" placeholder="999999999" class="w-full px-4 py-2 rounded-lg border border-gray-300"><button onclick="saveNif()" class="bg-indigo-600 text-white px-4 rounded-lg font-semibold hover:bg-indigo-700">Guardar</button></div><p id="nif-feedback" class="text-sm h-4 mt-1"></p>`;
                 }
                 nifDetailsContainer.classList.remove('hidden');
             } else {
@@ -492,7 +578,8 @@
             const nif = nifInput.value.trim();
             if (!nif) { feedbackEl.textContent = 'Por favor, insira o NIF.'; feedbackEl.className = 'text-red-500 text-sm h-4 mt-1'; return; }
             try {
-                const response = await fetch(`${API_URL}/clients/${currentClient.id}/nif`, {
+                const clientId = currentClient.id_client || currentClient.id;
+                const response = await fetch(`${API_URL}/clients/${clientId}/nif`, {
                     method: 'PUT', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ nif: nif })
                 });
@@ -502,7 +589,7 @@
                 feedbackEl.textContent = 'NIF guardado com sucesso!';
                 feedbackEl.className = 'text-green-600 text-sm h-4 mt-1';
                 setTimeout(updateNifDisplay, 1500);
-            } catch(error) {
+            } catch (error) {
                 console.error(error);
                 feedbackEl.textContent = error.message;
                 feedbackEl.className = 'text-red-500 text-sm h-4 mt-1';
@@ -512,22 +599,6 @@
         const addServiceToOrder = (service, quantity, description) => {
             selectedServices.push({ ...service, quantity, description });
             renderOrderSummary();
-        };
-
-        const updateServiceInOrder = (index, quantity, description) => {
-             selectedServices[index].quantity = quantity;
-             selectedServices[index].description = description;
-             renderOrderSummary();
-        };
-
-        const removeService = (index) => {
-            selectedServices.splice(index, 1);
-            if (selectedServices.length === 0) { showCategories(); orderSummarySection.classList.add('hidden'); }
-            else { renderOrderSummary(); }
-        };
-
-        const editService = (index) => {
-            openServiceModal('edit', selectedServices[index], index);
         };
 
         const openServiceModal = (action, service, index = null) => {
@@ -546,9 +617,8 @@
         const confirmServiceAction = () => {
             const quantity = parseInt(document.getElementById('service-quantity').value);
             const description = document.getElementById('service-description').value.trim();
-            const { action, service, index } = currentServiceAction;
+            const { action, service } = currentServiceAction;
             if (action === 'add') { addServiceToOrder(service, quantity, description); }
-            else if (action === 'edit') { updateServiceInOrder(index, quantity, description); }
             closeServiceModal();
         };
 
@@ -556,14 +626,17 @@
             const deliveryDate = document.getElementById('delivery-date').value;
             const comments = document.getElementById('order-comments').value;
             const discount = parseFloat(document.getElementById('discount-input').value) || 0;
+
             if (!deliveryDate) { alert('Por favor, selecione uma data de entrega prevista.'); return; }
 
             let subtotal = 0;
             selectedServices.forEach(s => { subtotal += s.preco * s.quantity; });
             const totalPrice = subtotal - discount;
 
+            const clientId = currentClient.id_client || currentClient.id;
+
             const orderData = {
-                clientId: currentClient.id,
+                clientId: clientId,
                 deliveryDate: deliveryDate,
                 comments: comments,
                 discount: discount,
@@ -579,45 +652,57 @@
 
             try {
                 const response = await fetch(`${API_URL}/pedidos`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(orderData)
                 });
-
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || 'Não foi possível criar o pedido.');
 
-                alert(`Pedido #${result.pedido_id} criado com sucesso! A imprimir...`);
+                const now = new Date();
+                const currentDate = now.toLocaleString('pt-PT').replace(',', '');
+                const deliveryStr = new Date(orderData.deliveryDate + 'T00:00:00').toLocaleDateString('pt-PT');
 
+                // ✅ agora imprimimos como FATURA e sem OT
                 const receiptData = {
                     pedido_id: result.pedido_id,
+                    documentType: "Fatura",
+                    documentNumber: (() => {
+                        const year = new Date().getFullYear();
+                        const hasNif = !!(currentClient && currentClient.nif && String(currentClient.nif).trim());
+                        const prefix = hasNif ? "FR" : "OT";
+                        return nextDocNumber(prefix, year);
+                    })(),
+                    currentDate: currentDate,
+                    deliveryDate: deliveryStr,
                     clientName: currentClient.name,
                     clientNif: currentClient.nif,
-                    currentDate: new Date().toLocaleString('pt-PT').replace(',', ''),
-                    deliveryDate: new Date(orderData.deliveryDate + 'T00:00:00').toLocaleDateString('pt-PT'),
+                    clientAddressOrNotes: comments,
+                    notes: comments,
+                    subtotal: subtotal,
+                    discount: discount,
+                    totalPrice: totalPrice,
                     services: selectedServices.map(s => ({
                         quantity: s.quantity,
                         name: s.nome,
                         description: s.description,
-                        itemTotal: (s.preco * s.quantity).toFixed(2)
-                    })),
-                    discount: orderData.discount.toFixed(2),
-                    totalPrice: orderData.totalPrice.toFixed(2)
+                        unitPrice: s.preco,
+                        itemTotal: (s.preco * s.quantity)
+                    }))
                 };
 
-                // ✅ NOVO: imprime via QZ (sem usar /print)
-                await printViaQZ(receiptData);
+                await printReceipt(receiptData);
 
-                // se imprimiu OK, reseta página
+                alert(`Pedido #${result.pedido_id} criado e impresso com sucesso!`);
                 window.location.reload();
 
             } catch (error) {
                 console.error(error);
                 alert(
                     `Erro: ${error.message}\n\n` +
-                    `• Confirme se o QZ Tray está aberto.\n` +
-                    `• Confirme o nome da impressora (POS-80) e se ela está instalada.\n` +
-                    `• Se precisar, me diga o nome EXATO da impressora no Windows.`
+                    `Confirme:\n` +
+                    `- QZ Tray está aberto\n` +
+                    `- A impressora "${PRINTER_NAME}" existe no Windows\n` +
+                    `- Você autorizou o site no QZ (Allow/Trusted)\n`
                 );
             }
         };
@@ -630,13 +715,34 @@
         modalCancelButton.addEventListener('click', closeServiceModal);
         modalConfirmButton.addEventListener('click', confirmServiceAction);
         addAnotherServiceButton.addEventListener('click', () => {
-             orderSummarySection.classList.add('hidden');
-             serviceSection.classList.remove('hidden');
-             showCategories();
+            orderSummarySection.classList.add('hidden');
+            serviceSection.classList.remove('hidden');
+            showCategories();
         });
         finalizeOrderButton.addEventListener('click', finalizeOrder);
         nifCheckbox.addEventListener('change', updateNifDisplay);
         continueToServicesButton.addEventListener('click', loadServicesAndShowCategories);
+
+        // Inicializa modo de impressão (QZ/HTTP) e UI
+        loadPrintMode();
+        const hintEl = document.getElementById("print-mode-hint");
+        document.querySelectorAll('input[name="print-mode"]').forEach(r => {
+            r.checked = (r.value === PRINT_MODE);
+            r.addEventListener("change", () => {
+                setPrintMode(r.value);
+                if (hintEl) hintEl.textContent = (PRINT_MODE === "qz")
+                    ? "Requer QZ Tray aberto e site autorizado."
+                    : "Requer endpoint /print no backend.";
+            });
+        });
+        if (hintEl) hintEl.textContent = (PRINT_MODE === "qz")
+            ? "Requer QZ Tray aberto e site autorizado."
+            : "Requer endpoint /print no backend.";
+
+
+        window.addEventListener("load", async () => {
+            try { await conectarQZ(); } catch (e) { /* silencioso */ }
+        });
 
     </script>
 </body>
