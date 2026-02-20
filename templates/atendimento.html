@@ -549,6 +549,9 @@ async function loadClientsSearch(q) {
             <div class="p-3 rounded-lg border border-gray-200">
                 <div class="font-semibold text-gray-900">${c.name}</div>
                 <div class="text-sm text-gray-500">${c.phone || ''} ${c.nif ? ' • NIF ' + c.nif : ''}</div>
+                <div class="mt-3 flex justify-end">
+                  <button class="edit-client-btn px-3 py-1.5 rounded-lg border border-purple-200 text-purple-700 hover:bg-purple-50 text-sm font-semibold" data-client-id="${c.id}">Editar</button>
+                </div>
             </div>
         `).join('');
     } catch (e) {
@@ -556,6 +559,119 @@ async function loadClientsSearch(q) {
         box.innerHTML = '<div class="text-red-600">Erro ao buscar clientes.</div>';
     }
 }
+
+// ============================
+// Editar Cliente (modal)
+// ============================
+const editModal = document.getElementById("edit-client-modal");
+const editClose = document.getElementById("edit-client-close");
+const editCancel = document.getElementById("edit-client-cancel");
+const editSave = document.getElementById("edit-client-save");
+
+const editIdEl = document.getElementById("edit-client-id");
+const editNameEl = document.getElementById("edit-client-name");
+const editPhoneEl = document.getElementById("edit-client-phone");
+const editNifEl = document.getElementById("edit-client-nif");
+const editErrEl = document.getElementById("edit-client-error");
+const editOkEl = document.getElementById("edit-client-success");
+
+function openEditModal() {
+    editErrEl.classList.add("hidden");
+    editOkEl.classList.add("hidden");
+    editModal.classList.remove("hidden");
+    editModal.classList.add("flex");
+}
+function closeEditModal() {
+    editModal.classList.add("hidden");
+    editModal.classList.remove("flex");
+}
+
+function setEditError(msg) {
+    editOkEl.classList.add("hidden");
+    editErrEl.textContent = msg;
+    editErrEl.classList.remove("hidden");
+}
+function setEditSuccess(msg) {
+    editErrEl.classList.add("hidden");
+    editOkEl.textContent = msg;
+    editOkEl.classList.remove("hidden");
+}
+
+editClose?.addEventListener("click", closeEditModal);
+editCancel?.addEventListener("click", closeEditModal);
+editModal?.addEventListener("click", (e) => {
+    if (e.target === editModal) closeEditModal();
+});
+
+async function openEditClient(clientId) {
+    const resp = await fetch(`${API_URL}/clients/by-id/${clientId}`);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || "Falha ao carregar cliente.");
+    editIdEl.value = data.id;
+    editNameEl.value = data.name || "";
+    editPhoneEl.value = data.phone || "";
+    editNifEl.value = data.nif || "";
+    openEditModal();
+    setTimeout(() => editNameEl.focus(), 50);
+}
+
+editSave?.addEventListener("click", async () => {
+    const clientId = editIdEl.value;
+    const payload = {
+        name: (editNameEl.value || "").trim(),
+        phone: (editPhoneEl.value || "").trim(),
+        nif: (editNifEl.value || "").trim(),
+    };
+
+    if (!payload.name || !payload.phone) {
+        setEditError("Nome e telefone são obrigatórios.");
+        return;
+    }
+
+    editSave.disabled = true;
+    editSave.classList.add("opacity-60");
+
+    try {
+        const resp = await fetch(`${API_URL}/clients/by-id/${clientId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || "Falha ao salvar.");
+
+        setEditSuccess("Cliente atualizado com sucesso.");
+        // Recarrega a busca atual
+        const q = (document.getElementById("clients-search-input")?.value || "").trim();
+        if (q) await loadClientsSearch(q);
+
+        // Atualiza o currentClient em memória (se for o mesmo)
+        if (currentClient && String(currentClient.id) === String(clientId)) {
+            currentClient.name = payload.name;
+            currentClient.phone = payload.phone;
+            currentClient.nif = payload.nif;
+        }
+
+        setTimeout(closeEditModal, 650);
+    } catch (e) {
+        setEditError(e.message || "Erro ao salvar.");
+    } finally {
+        editSave.disabled = false;
+        editSave.classList.remove("opacity-60");
+    }
+});
+
+// Delegação para botão "Editar"
+document.addEventListener("click", (e) => {
+    const btn = e.target.closest?.(".edit-client-btn");
+    if (!btn) return;
+    const clientId = btn.getAttribute("data-client-id");
+    if (!clientId) return;
+    openEditClient(clientId).catch(err => {
+        console.error(err);
+        alert(err.message || "Erro ao abrir edição.");
+    });
+});
 
 document.getElementById('clients-search-button')?.addEventListener('click', () => {
     const q = document.getElementById('clients-search-input')?.value?.trim() || '';
@@ -680,6 +796,9 @@ const handleClientSearch = async () => {
                 <button data-client-id="${c.id}" class="w-full text-left p-3 rounded-lg border border-gray-200 hover:bg-gray-50">
                     <div class="font-semibold text-gray-900">${c.name}</div>
                     <div class="text-sm text-gray-500">${c.phone || ''} ${c.nif ? ' • NIF ' + c.nif : ''}</div>
+                <div class="mt-3 flex justify-end">
+                  <button class="edit-client-btn px-3 py-1.5 rounded-lg border border-purple-200 text-purple-700 hover:bg-purple-50 text-sm font-semibold" data-client-id="${c.id}">Editar</button>
+                </div>
                 </button>
             `).join('');
 
@@ -988,6 +1107,44 @@ window.location.reload();
         });
 
     </script>
+    
+      <!-- Modal editar cliente -->
+      <div id="edit-client-modal" class="fixed inset-0 bg-black/40 hidden items-center justify-center z-50">
+        <div class="bg-white w-full max-w-lg rounded-2xl shadow-xl p-6 mx-4">
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <h3 class="text-xl font-bold text-gray-900">Editar cliente</h3>
+              <p class="text-sm text-gray-500">Atualize nome, telefone e NIF.</p>
+            </div>
+            <button id="edit-client-close" class="text-gray-400 hover:text-gray-700 text-2xl leading-none">&times;</button>
+          </div>
+
+          <div class="mt-5 space-y-4">
+            <input type="hidden" id="edit-client-id" value="">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Nome</label>
+              <input id="edit-client-name" class="w-full border border-gray-300 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-400" placeholder="Nome do cliente">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Telefone</label>
+              <input id="edit-client-phone" class="w-full border border-gray-300 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-400" placeholder="Telefone">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">NIF (opcional)</label>
+              <input id="edit-client-nif" class="w-full border border-gray-300 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-400" placeholder="NIF">
+            </div>
+
+            <div id="edit-client-error" class="hidden text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3"></div>
+            <div id="edit-client-success" class="hidden text-sm text-green-700 bg-green-50 border border-green-200 rounded-xl p-3"></div>
+          </div>
+
+          <div class="mt-6 flex gap-3 justify-end">
+            <button id="edit-client-cancel" class="px-4 py-2 rounded-xl border border-gray-300 hover:bg-gray-50">Cancelar</button>
+            <button id="edit-client-save" class="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-semibold">Salvar</button>
+          </div>
+        </div>
+      </div>
+
     </main>
   </div>
 </body>
