@@ -287,8 +287,11 @@ function nextDocNumber(prefix, year) {
             out.push(STORE_INFO.company + "\n");
             out.push(STORE_INFO.address1 + "\n");
             out.push(STORE_INFO.address2 + "\n");
-            out.push("NIF: " + STORE_INFO.nif + "\n");
-            out.push(STORE_INFO.email + "\n");
+            if (receiptData.includeNif && receiptData.nif && String(receiptData.nif).trim()) {
+                out.push("NIF: " + String(receiptData.nif).trim() + "
+");
+            }
+out.push(STORE_INFO.email + "\n");
             out.push("Tel.: " + STORE_INFO.phone + "\n");
             out.push("\n");
 
