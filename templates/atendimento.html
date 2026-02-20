@@ -260,6 +260,7 @@
     <script>
         const API_URL = `${window.location.protocol}//${window.location.host}`;
 
+
         // ============================
         // Sidebar (tablet): abrir/fechar e ocultar automaticamente após "Next"
         // ============================
@@ -277,11 +278,10 @@
         }
         function setSidebarAuto(hidden) {
             const isMobile = window.matchMedia("(max-width: 767px)").matches;
-            if (!isMobile) return;
+            if (!isMobile) return; // desktop mantém sidebar
             if (hidden) closeSidebar();
-            else closeSidebar();
+            else closeSidebar(); // não abre automaticamente
         }
-
 
 // ============================
 // MODO DE IMPRESSÃO
@@ -584,8 +584,9 @@ async function printReceipt(receiptData) {
 
         let allServicesData = {};
         let currentClient = null;
-        let cachedServices = null; // lista completa de serviços do backend
-        let selectedServices = [];
+        
+        let cachedServices = null; // cache de serviços
+let selectedServices = [];
         let currentServiceAction = null;
 
 
@@ -1162,7 +1163,12 @@ window.location.reload();
             }
         };
 
-        searchClientButton.addEventListener('click', handleClientSearch);
+        
+        // Sidebar toggle (tablet)
+        document.getElementById("sidebar-toggle")?.addEventListener("click", () => openSidebar());
+        document.getElementById("sidebar-overlay")?.addEventListener("click", () => closeSidebar());
+
+searchClientButton.addEventListener('click', handleClientSearch);
         telefoneInput.addEventListener('keyup', (e) => { if (e.key === 'Enter') handleClientSearch(); });
         registerClientButton.addEventListener('click', handleClientRegistration);
         backToCategoriesButton.addEventListener('click', showCategories);
