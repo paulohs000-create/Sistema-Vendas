@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sistema de Atendimento</title>
     <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- QZ Tray (client-side) -->
+    <!-- Dependências recomendadas pelo QZ: Promise + SHA -->
+    <script src="https://cdn.jsdelivr.net/npm/rsvp@4/dist/rsvp.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/js-sha256@0.11.0/build/sha256.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qz-tray@2.2.5/qz-tray.js"></script>
+
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; background-color: #f7f3f1; }
@@ -12,121 +19,96 @@
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
+<body class="flex items-center justify-center min-h-screen p-4">
 
-<!-- ALTERAÇÃO: antes era "flex items-center justify-center min-h-screen p-4"
-     Agora viramos uma coluna, com header em cima e o app centralizado abaixo -->
-<body class="min-h-screen flex flex-col">
+    <div id="main-application" class="bg-white p-8 sm:p-10 rounded-2xl shadow-2xl w-full max-w-2xl space-y-8">
 
-    <!-- ✅ NOVO: Topbar com usuário e logout (não quebra nada do seu app) -->
-    <header class="w-full bg-white/90 backdrop-blur border-b border-gray-200">
-        <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-            <div class="flex flex-col">
-                <span class="text-sm font-semibold text-gray-800">Sistema de Atendimento</span>
-                <span class="text-xs text-gray-500">Sessão ativa</span>
-            </div>
+        <header id="main-header" class="text-center">
+            <h1 class="text-3xl sm:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600">
+                Sistema de Atendimento
+            </h1>
+            <p class="text-gray-500 mt-2">Localize o cliente e selecione o serviço</p>
 
-            <div class="flex items-center gap-4">
-                <div class="text-sm text-gray-600">
-                    Logado como:
-                    <span class="font-semibold text-gray-900">{{ session.get('user') }}</span>
+            <!-- Status do QZ -->
+            <p id="qz-status" class="mt-3 text-xs text-gray-500"></p>
+        </header>
+
+        <div id="client-section" class="space-y-6 fade-in">
+            <h2 class="text-2xl font-semibold text-gray-800 border-b pb-3">1. Encontre o Cliente</h2>
+            <div>
+                <label for="telefone" class="block text-gray-700 font-medium mb-1">Telefone</label>
+                <div class="flex space-x-2">
+                    <input type="tel" id="telefone" placeholder="912 345 678" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    <button id="search-client-button" class="bg-purple-600 text-white py-2 px-6 rounded-lg font-semibold hover:bg-purple-700 transition-colors">Buscar</button>
                 </div>
-
-                <a href="/logout"
-                   class="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-red-700 transition-colors">
-                    Sair
-                </a>
+                <p id="client-info" class="text-gray-600 text-base font-semibold mt-3 h-6"></p>
             </div>
-        </div>
-    </header>
-
-    <!-- ✅ Mantém seu layout centralizado -->
-    <main class="flex-1 flex items-center justify-center p-4">
-        <div id="main-application" class="bg-white p-8 sm:p-10 rounded-2xl shadow-2xl w-full max-w-2xl space-y-8">
-            
-            <header id="main-header" class="text-center">
-                <h1 class="text-3xl sm:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600">
-                    Sistema de Atendimento
-                </h1>
-                <p class="text-gray-500 mt-2">Localize o cliente e selecione o serviço</p>
-            </header>
-            
-            <div id="client-section" class="space-y-6 fade-in">
-                <h2 class="text-2xl font-semibold text-gray-800 border-b pb-3">1. Encontre o Cliente</h2>
+            <div id="client-details-input" class="hidden space-y-4">
                 <div>
-                    <label for="telefone" class="block text-gray-700 font-medium mb-1">Telefone</label>
-                    <div class="flex space-x-2">
-                        <input type="tel" id="telefone" placeholder="912 345 678" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
-                        <button id="search-client-button" class="bg-purple-600 text-white py-2 px-6 rounded-lg font-semibold hover:bg-purple-700 transition-colors">Buscar</button>
-                    </div>
-                    <p id="client-info" class="text-gray-600 text-base font-semibold mt-3 h-6"></p>
+                    <label for="nome-cliente" class="block text-gray-700 font-medium mb-1">Nome do Cliente</label>
+                    <input type="text" id="nome-cliente" placeholder="Digite o nome do cliente" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
                 </div>
-                <div id="client-details-input" class="hidden space-y-4">
-                    <div>
-                        <label for="nome-cliente" class="block text-gray-700 font-medium mb-1">Nome do Cliente</label>
-                        <input type="text" id="nome-cliente" placeholder="Digite o nome do cliente" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
-                    </div>
-                    <div>
-                        <label for="nif-cliente" class="block text-gray-700 font-medium mb-1">NIF (Opcional)</label>
-                        <input type="text" id="nif-cliente" placeholder="Ex: 999999999" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
-                    </div>
-                     <button id="register-client-button" class="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors">Cadastrar Novo Cliente</button>
+                <div>
+                    <label for="nif-cliente" class="block text-gray-700 font-medium mb-1">NIF (Opcional)</label>
+                    <input type="text" id="nif-cliente" placeholder="Ex: 999999999" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
                 </div>
-                <button id="continue-to-services-button" class="hidden mt-4 w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition-colors">Seguinte</button>
+                 <button id="register-client-button" class="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors">Cadastrar Novo Cliente</button>
             </div>
+            <button id="continue-to-services-button" class="hidden mt-4 w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition-colors">Seguinte</button>
+        </div>
 
-            <div id="service-section" class="space-y-6 hidden">
-                <div id="service-categories-container">
-                    <h2 class="text-2xl font-semibold text-gray-800 border-b pb-3 mb-6">2. Selecione a Categoria</h2>
-                    <div id="service-categories" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4"></div>
-                </div>
-                <div id="specific-services-container" class="hidden">
-                     <h2 id="specific-service-title" class="text-2xl font-semibold text-gray-800 border-b pb-3 mb-6">3. Selecione o Serviço</h2>
-                     <div id="specific-services" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4"></div>
-                    <button id="back-to-categories-button" class="mt-6 w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors">Voltar para Categorias</button>
-                </div>
+        <div id="service-section" class="space-y-6 hidden">
+            <div id="service-categories-container">
+                <h2 class="text-2xl font-semibold text-gray-800 border-b pb-3 mb-6">2. Selecione a Categoria</h2>
+                <div id="service-categories" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4"></div>
             </div>
-
-            <div id="order-summary-section" class="space-y-6 hidden">
-                 <h2 class="text-2xl font-semibold text-gray-800 border-b pb-3">4. Resumo do Pedido</h2>
-                 <div class="bg-gray-50 p-4 rounded-lg">
-                     <p class="font-medium text-gray-600">Cliente:</p>
-                     <p id="summary-client-name" class="text-lg font-semibold text-purple-800"></p>
-                 </div>
-                 <div>
-                    <h3 class="font-semibold text-gray-700 mb-2">Serviços Selecionados:</h3>
-                    <div id="summary-services-list" class="space-y-3 max-h-60 overflow-y-auto pr-2"></div>
-                 </div>
-                 <div>
-                    <label for="order-comments" class="block text-gray-700 font-medium mb-1">Observações Gerais do Pedido</label>
-                    <textarea id="order-comments" rows="3" placeholder="Ex: Cliente pediu urgência, tecido delicado..." class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500"></textarea>
-                </div>
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                        <label for="delivery-date" class="block text-gray-700 font-medium mb-1">Data de Entrega Prevista</label>
-                        <input type="date" id="delivery-date" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
-                    </div>
-                     <div>
-                        <label for="discount-input" class="block text-gray-700 font-medium mb-1">Desconto (€)</label>
-                        <input type="number" id="discount-input" placeholder="0.00" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
-                    </div>
-                </div>
-                <div class="space-y-3 pt-4 border-t">
-                    <div class="flex items-center">
-                        <input id="nif-checkbox" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500">
-                        <label for="nif-checkbox" class="ml-3 block text-gray-900 font-medium">Adicionar Contribuinte para Fatura</label>
-                    </div>
-                    <div id="nif-details-container" class="hidden ml-7 space-y-2"></div>
-                </div>
-                 <div class="text-right border-t pt-4">
-                     <p class="text-2xl font-bold text-gray-800">Total: <span id="summary-total-price" class="text-purple-600">€ 0.00</span></p>
-                 </div>
-                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4">
-                    <button id="add-another-service-button" class="w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors">Adicionar Outro Serviço</button>
-                    <button id="finalize-order-button" class="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition-colors">Finalizar Pedido</button>
-                 </div>
+            <div id="specific-services-container" class="hidden">
+                 <h2 id="specific-service-title" class="text-2xl font-semibold text-gray-800 border-b pb-3 mb-6">3. Selecione o Serviço</h2>
+                 <div id="specific-services" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4"></div>
+                <button id="back-to-categories-button" class="mt-6 w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors">Voltar para Categorias</button>
             </div>
         </div>
-    </main>
+
+        <div id="order-summary-section" class="space-y-6 hidden">
+             <h2 class="text-2xl font-semibold text-gray-800 border-b pb-3">4. Resumo do Pedido</h2>
+             <div class="bg-gray-50 p-4 rounded-lg">
+                 <p class="font-medium text-gray-600">Cliente:</p>
+                 <p id="summary-client-name" class="text-lg font-semibold text-purple-800"></p>
+             </div>
+             <div>
+                <h3 class="font-semibold text-gray-700 mb-2">Serviços Selecionados:</h3>
+                <div id="summary-services-list" class="space-y-3 max-h-60 overflow-y-auto pr-2"></div>
+             </div>
+             <div>
+                <label for="order-comments" class="block text-gray-700 font-medium mb-1">Observações Gerais do Pedido</label>
+                <textarea id="order-comments" rows="3" placeholder="Ex: Cliente pediu urgência, tecido delicado..." class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500"></textarea>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                    <label for="delivery-date" class="block text-gray-700 font-medium mb-1">Data de Entrega Prevista</label>
+                    <input type="date" id="delivery-date" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                </div>
+                 <div>
+                    <label for="discount-input" class="block text-gray-700 font-medium mb-1">Desconto (€)</label>
+                    <input type="number" id="discount-input" placeholder="0.00" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                </div>
+            </div>
+            <div class="space-y-3 pt-4 border-t">
+                <div class="flex items-center">
+                    <input id="nif-checkbox" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+                    <label for="nif-checkbox" class="ml-3 block text-gray-900 font-medium">Adicionar Contribuinte para Fatura</label>
+                </div>
+                <div id="nif-details-container" class="hidden ml-7 space-y-2"></div>
+            </div>
+             <div class="text-right border-t pt-4">
+                 <p class="text-2xl font-bold text-gray-800">Total: <span id="summary-total-price" class="text-purple-600">€ 0.00</span></p>
+             </div>
+             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4">
+                <button id="add-another-service-button" class="w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors">Adicionar Outro Serviço</button>
+                <button id="finalize-order-button" class="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition-colors">Finalizar Pedido</button>
+             </div>
+        </div>
+    </div>
 
     <div id="service-details-modal" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center p-4 z-50 hidden">
         <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md space-y-6">
@@ -148,8 +130,195 @@
 
     <script>
         const API_URL = `${window.location.protocol}//${window.location.host}`;
-        const PRINT_SERVER_URL = "http://127.0.0.1:8080";
-        
+
+        // ---------------------------------------------------------------------
+        // QZ Tray CONFIG
+        // ---------------------------------------------------------------------
+        // Ajuste aqui se o nome exato no Windows/Mac/Linux for diferente
+        // (pode ser "POS-80", "POS 80", "POS80 Printer", etc.)
+        const QZ_PRINTER_PREFERRED = "POS-80";
+
+        const qzStatusEl = document.getElementById('qz-status');
+
+        // QZ precisa saber qual Promise usar e qual SHA usar
+        if (window.qz) {
+            try {
+                qz.api.setPromiseType(function(resolver) { return new RSVP.Promise(resolver); });
+                qz.api.setSha256Type(function(data) { return sha256(data); });
+
+                // Sem assinatura (vai mostrar prompts do QZ, dependendo da configuração)
+                qz.security.setCertificatePromise(function(resolve, reject) { resolve(null); });
+                qz.security.setSignaturePromise(function(toSign) { return function(resolve, reject) { resolve(null); }; });
+            } catch (e) {
+                console.warn("Falha configurando QZ API:", e);
+            }
+        }
+
+        async function ensureQZConnected() {
+            if (!window.qz) throw new Error("Biblioteca QZ não carregou (qz-tray.js).");
+            if (qz.websocket && qz.websocket.isActive()) return true;
+
+            qzStatusEl.textContent = "QZ: a conectar...";
+            try {
+                await qz.websocket.connect({ retries: 2, delay: 1 });
+                qzStatusEl.textContent = "QZ: conectado ✅";
+                return true;
+            } catch (err) {
+                qzStatusEl.textContent = "QZ: não conectado ❌ (abra o QZ Tray)";
+                throw new Error("Não foi possível conectar ao QZ Tray. Verifique se o QZ Tray está instalado e aberto.");
+            }
+        }
+
+        async function findBestPrinter() {
+            await ensureQZConnected();
+
+            // 1) tenta achar pelo nome preferido
+            try {
+                const found = await qz.printers.find(QZ_PRINTER_PREFERRED);
+                if (found) return found;
+            } catch (e) {
+                // ignora e tenta outras estratégias
+            }
+
+            // 2) tenta variações comuns
+            const variants = ["POS 80", "POS80", "POS-80", "TM-T20", "EPSON", "XP-80"];
+            for (const v of variants) {
+                try {
+                    const found = await qz.printers.find(v);
+                    if (found) return found;
+                } catch (e) {}
+            }
+
+            // 3) fallback: impressora padrão do sistema
+            try {
+                const def = await qz.printers.getDefault();
+                if (def) return def;
+            } catch (e) {}
+
+            // 4) sem printer
+            throw new Error("Nenhuma impressora encontrada no QZ. Verifique o nome da impressora e se ela está instalada.");
+        }
+
+        function padRight(str, len) {
+            str = String(str ?? "");
+            if (str.length >= len) return str.slice(0, len);
+            return str + " ".repeat(len - str.length);
+        }
+
+        function formatMoneyEUR(value) {
+            const num = Number(value);
+            if (!isFinite(num)) return "0.00";
+            return num.toFixed(2);
+        }
+
+        function buildReceiptText(receipt) {
+            // 80mm costuma caber 48 colunas (depende do font da impressora)
+            const COLS = 48;
+            const line = "-".repeat(COLS);
+
+            const center = (text) => {
+                text = String(text ?? "");
+                if (text.length >= COLS) return text.slice(0, COLS);
+                const left = Math.floor((COLS - text.length) / 2);
+                const right = COLS - text.length - left;
+                return " ".repeat(left) + text + " ".repeat(right);
+            };
+
+            const lines = [];
+
+            // Cabeçalho (simples — depois ajustamos igual ao teu modelo)
+            lines.push(center("FATURA"));
+            lines.push(center("Sistema de Vendas"));
+            lines.push(line);
+
+            lines.push(`Pedido: #${receipt.pedido_id}`);
+            lines.push(`Data:   ${receipt.currentDate}`);
+            lines.push(`Entrega:${receipt.deliveryDate}`);
+            lines.push(line);
+
+            lines.push(`Cliente: ${receipt.clientName}`);
+            if (receipt.clientNif) lines.push(`NIF:     ${receipt.clientNif}`);
+            lines.push(line);
+
+            // Itens
+            lines.push(padRight("QTD  DESCRICAO", 34) + padRight("TOTAL", 14));
+            lines.push(line);
+
+            for (const it of (receipt.services || [])) {
+                const qty = String(it.quantity ?? 1);
+                const name = String(it.name ?? "").trim();
+                const desc = String(it.description ?? "").trim();
+                const itemTotal = formatMoneyEUR(it.itemTotal);
+
+                // 1ª linha: qty + nome
+                const left = `${qty}x ${name}`;
+                lines.push(padRight(left, 34) + padRight(`€ ${itemTotal}`, 14));
+
+                // 2ª linha opcional: descrição
+                if (desc) {
+                    const d = ("- " + desc);
+                    // quebra básica em múltiplas linhas
+                    let i = 0;
+                    while (i < d.length) {
+                        lines.push("  " + d.slice(i, i + (COLS - 2)));
+                        i += (COLS - 2);
+                    }
+                }
+            }
+
+            lines.push(line);
+
+            const discount = formatMoneyEUR(receipt.discount || 0);
+            if (Number(discount) > 0) {
+                lines.push(padRight("Desconto", 34) + padRight(`- € ${discount}`, 14));
+            }
+            lines.push(padRight("TOTAL", 34) + padRight(`€ ${formatMoneyEUR(receipt.totalPrice)}`, 14));
+
+            lines.push(line);
+            lines.push(center("Obrigado!"));
+            lines.push(""); // linha em branco
+
+            // Comandos ESC/POS (corte de papel)
+            // init + feed + cut
+            const escposInit = "\x1B\x40";
+            const escposFeed = "\x1B\x64\x03"; // alimenta 3 linhas
+            const escposCut  = "\x1D\x56\x00"; // corte total
+
+            return escposInit + lines.join("\n") + "\n" + escposFeed + escposCut;
+        }
+
+        async function printViaQZ(receiptData) {
+            const printer = await findBestPrinter();
+            const config = qz.configs.create(printer, {
+                copies: 1
+            });
+
+            const rawData = buildReceiptText(receiptData);
+
+            // Envia como RAW/PLAIN (ESC/POS dentro do texto)
+            const data = [{
+                type: 'raw',
+                format: 'plain',
+                data: rawData
+            }];
+
+            qzStatusEl.textContent = `QZ: a imprimir em "${printer}"...`;
+            await qz.print(config, data);
+            qzStatusEl.textContent = `QZ: impresso ✅ (${printer})`;
+        }
+
+        // tenta conectar assim que a página abre (não quebra se falhar)
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                await ensureQZConnected();
+            } catch (e) {
+                console.warn(e);
+            }
+        });
+
+        // ---------------------------------------------------------------------
+        // Seu código original
+        // ---------------------------------------------------------------------
         const mainApplication = document.getElementById('main-application');
         const clientSection = document.getElementById('client-section');
         const serviceSection = document.getElementById('service-section');
@@ -180,7 +349,7 @@
         const modalConfirmButton = document.getElementById('modal-confirm-button');
         const nifCheckbox = document.getElementById('nif-checkbox');
         const nifDetailsContainer = document.getElementById('nif-details-container');
-        
+
         let allServicesData = {};
         let currentClient = null;
         let selectedServices = [];
@@ -254,7 +423,7 @@
                 alert(`Erro: ${error.message}`);
             }
         };
-        
+
         function displayServiceCategories(categories) {
             serviceCategoriesDiv.innerHTML = '';
             Object.keys(categories).forEach(category => {
@@ -339,12 +508,12 @@
                 feedbackEl.className = 'text-red-500 text-sm h-4 mt-1';
             }
         };
-        
+
         const addServiceToOrder = (service, quantity, description) => {
             selectedServices.push({ ...service, quantity, description });
             renderOrderSummary();
         };
-        
+
         const updateServiceInOrder = (index, quantity, description) => {
              selectedServices[index].quantity = quantity;
              selectedServices[index].description = description;
@@ -360,7 +529,7 @@
         const editService = (index) => {
             openServiceModal('edit', selectedServices[index], index);
         };
-        
+
         const openServiceModal = (action, service, index = null) => {
             currentServiceAction = { action, service, index };
             modalTitle.textContent = action === 'add' ? 'Adicionar Detalhes' : 'Editar Detalhes';
@@ -368,7 +537,7 @@
             document.getElementById('service-description').value = service.description || '';
             serviceDetailsModal.classList.remove('hidden');
         };
-        
+
         const closeServiceModal = () => {
             serviceDetailsModal.classList.add('hidden');
             currentServiceAction = null;
@@ -382,21 +551,27 @@
             else if (action === 'edit') { updateServiceInOrder(index, quantity, description); }
             closeServiceModal();
         };
-        
+
         const finalizeOrder = async () => {
             const deliveryDate = document.getElementById('delivery-date').value;
             const comments = document.getElementById('order-comments').value;
             const discount = parseFloat(document.getElementById('discount-input').value) || 0;
             if (!deliveryDate) { alert('Por favor, selecione uma data de entrega prevista.'); return; }
+
             let subtotal = 0;
             selectedServices.forEach(s => { subtotal += s.preco * s.quantity; });
             const totalPrice = subtotal - discount;
+
             const orderData = {
-                clientId: currentClient.id, deliveryDate: deliveryDate, comments: comments, discount: discount, totalPrice: totalPrice,
-                services: selectedServices.map(s => ({ 
-                    id: s.id, 
-                    quantity: s.quantity, 
-                    description: s.description, 
+                clientId: currentClient.id,
+                deliveryDate: deliveryDate,
+                comments: comments,
+                discount: discount,
+                totalPrice: totalPrice,
+                services: selectedServices.map(s => ({
+                    id: s.id,
+                    quantity: s.quantity,
+                    description: s.description,
                     preco: s.preco,
                     nome: s.nome
                 }))
@@ -404,12 +579,14 @@
 
             try {
                 const response = await fetch(`${API_URL}/pedidos`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(orderData)
                 });
+
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || 'Não foi possível criar o pedido.');
-                
+
                 alert(`Pedido #${result.pedido_id} criado com sucesso! A imprimir...`);
 
                 const receiptData = {
@@ -427,23 +604,21 @@
                     discount: orderData.discount.toFixed(2),
                     totalPrice: orderData.totalPrice.toFixed(2)
                 };
-                
-                const printResponse = await fetch(`${PRINT_SERVER_URL}/print`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(receiptData)
-                });
 
-                if (!printResponse.ok) {
-                   const printError = await printResponse.json();
-                   throw new Error(`Pedido guardado, mas falha ao imprimir: ${printError.error}`);
-                }
-                
+                // ✅ NOVO: imprime via QZ (sem usar /print)
+                await printViaQZ(receiptData);
+
+                // se imprimiu OK, reseta página
                 window.location.reload();
 
             } catch (error) {
                 console.error(error);
-                alert(`Erro: ${error.message}\n\nVerifique se o servidor de impressão está a ser executado.`);
+                alert(
+                    `Erro: ${error.message}\n\n` +
+                    `• Confirme se o QZ Tray está aberto.\n` +
+                    `• Confirme o nome da impressora (POS-80) e se ela está instalada.\n` +
+                    `• Se precisar, me diga o nome EXATO da impressora no Windows.`
+                );
             }
         };
 
