@@ -1,4 +1,5 @@
 import os
+import base64
 from datetime import date, datetime, timedelta
 from functools import wraps
 
@@ -421,6 +422,42 @@ def db_test():
             cur.execute("SELECT 1 AS ok;")
             row = cur.fetchone()
     return jsonify({"db": "ok", "result": row}), 200
+
+
+
+# -----------------------------------------------------------------------------
+# QZ Tray (Assinatura server-side para remover popup "Untrusted website")
+# -----------------------------------------------------------------------------
+@app.post("/qz/sign")
+def qz_sign():
+    """Assina o payload solicitado pelo QZ Tray e devolve assinatura em base64 (texto).
+
+    Requer:
+      - ENV QZ_PRIVATE_KEY_PEM com a chave privada PEM (recomendado em produção)
+        OU
+      - arquivo local private-key.pem (NUNCA em /static)
+    """
+    to_sign = request.get_data()  # bytes
+
+    private_key_pem = (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
+    if private_key_pem:
+        private_key_bytes = private_key_pem.encode("utf-8")
+    else:
+        key_path = os.environ.get("QZ_PRIVATE_KEY_PATH", "private-key.pem")
+        if not os.path.exists(key_path):
+            return jsonify({"error": "Chave privada do QZ não encontrada (QZ_PRIVATE_KEY_PEM ou private-key.pem)."}), 500
+        with open(key_path, "rb") as f:
+            private_key_bytes = f.read()
+
+    try:
+        from OpenSSL import crypto
+        pkey = crypto.load_privatekey(crypto.FILETYPE_PEM, private_key_bytes)
+        signature = crypto.sign(pkey, to_sign, "sha256")
+        signature_b64 = base64.b64encode(signature).decode("utf-8")
+        return signature_b64, 200, {"Content-Type": "text/plain; charset=utf-8"}
+    except Exception as e:
+        print(f"[QZ] Falha ao assinar: {e}")
+        return jsonify({"error": "Falha ao assinar para o QZ."}), 500
 
 
 @app.route("/login", methods=["GET", "POST"])
