@@ -633,7 +633,7 @@ function setActiveNav(active) {
 }
 
 function showSection(which) {
-            if (sectionId === "client-section") { setSidebarAuto(false); } else { setSidebarAuto(true); }
+            if (which === "client-section") { setSidebarAuto(false); } else { setSidebarAuto(true); }
 
     if (sectionAtendimento) sectionAtendimento.classList.toggle('hidden', which !== 'atendimento');
     if (sectionClientes) sectionClientes.classList.toggle('hidden', which !== 'clientes');
