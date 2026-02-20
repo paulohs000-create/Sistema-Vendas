@@ -22,6 +22,30 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
 
 
+# -------------------------------------------------------------------------
+# Schema safety (migrações leves em runtime)
+# -------------------------------------------------------------------------
+def ensure_schema():
+    """Aplica ALTER TABLE leves e idempotentes.
+    Observação: para projetos maiores, prefira uma migração (Alembic).
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Flag para relatórios: pedido com contribuinte (NIF) selecionado
+                cur.execute(
+                    """
+                    ALTER TABLE IF EXISTS pedidos
+                    ADD COLUMN IF NOT EXISTS include_nif boolean NOT NULL DEFAULT false
+                    """
+                )
+            conn.commit()
+    except Exception as e:
+        # Não derruba o app por falha de migração leve; loga apenas.
+        print(f"[SCHEMA] ensure_schema falhou: {e}")
+
+
+
 # -----------------------------------------------------------------------------
 # Database
 # -----------------------------------------------------------------------------
@@ -60,6 +84,9 @@ def handle_errors(f):
             return jsonify({"error": str(e)}), 500
 
     return wrapper
+
+
+ensure_schema()
 
 
 # -----------------------------------------------------------------------------
@@ -630,7 +657,7 @@ def admin_stats():
 @login_required(["admin", "caixa"])
 @handle_errors
 def serve_main_page():
-    return render_template("atendimento.html")
+    return render_template("atendimento.html", user=session.get("user"), role=session.get("role"))
 
 
 @app.get("/gerenciamento")
@@ -666,6 +693,50 @@ def get_client_by_phone(phone):
     if row:
         return jsonify({"id": row["id_client"], "name": row["name"], "nif": row["nif"]}), 200
     return jsonify({"error": "Cliente não encontrado."}), 404
+
+
+@app.get("/clients/search")
+@login_required(["admin", "caixa"])
+@handle_errors
+def search_clients():
+    """Busca por telefone (parcial) ou nome.
+    Query param: ?q=...
+    Retorna lista (máx 20).
+    """
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"results": []}), 200
+
+    q_digits = "".join([c for c in q if c.isdigit()])
+    like_name = f"%{q}%"
+    like_phone = f"%{q_digits}%" if q_digits else None
+
+    sql = "SELECT id_client, name, phone, nif FROM clients WHERE "
+    params = []
+
+    if like_phone:
+        sql += "(phone ILIKE %s) OR (name ILIKE %s) "
+        params.extend([like_phone, like_name])
+    else:
+        sql += "name ILIKE %s "
+        params.append(like_name)
+
+    sql += "ORDER BY name ASC LIMIT 20"
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall() or []
+
+    return jsonify(
+        {
+            "results": [
+                {"id": r["id_client"], "name": r["name"], "phone": r["phone"], "nif": r["nif"]}
+                for r in rows
+            ]
+        }
+    ), 200
+
 
 
 @app.post("/clients")
@@ -897,6 +968,7 @@ def criar_pedido():
     comments = data.get("comments")
     discount = float(data.get("discount") or 0)
     total_price = float(data.get("totalPrice") or 0)
+    include_nif = bool(data.get("include_nif") or data.get("includeNif") or False)
     services = data.get("services") or []
 
     if not client_id or not delivery_date or not services:
@@ -906,11 +978,11 @@ def criar_pedido():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status)
-                VALUES (%s, NOW(), %s, %s, %s, %s, %s)
+                INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif)
+                VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
                 RETURNING id_pedido
                 """,
-                (int(client_id), delivery_date, comments, discount, total_price, "Pendente"),
+                (int(client_id), delivery_date, comments, discount, total_price, "Pendente", include_nif),
             )
             pedido_id = cur.fetchone()["id_pedido"]
 
@@ -965,6 +1037,103 @@ def pedidos_stats():
             completed_today = cur.fetchone()["c"]
 
     return jsonify({"pending_today": pending_today, "completed_today": completed_today}), 200
+
+
+@app.get("/pedidos/recentes")
+@login_required(["admin", "caixa"])
+@handle_errors
+def pedidos_recentes():
+    """Lista serviços/pedidos dos últimos N meses (default=3).
+    Filtros:
+      - ?q=...  (nome/telefone/nif/pedido_id)
+      - ?only_nif=1  (somente pedidos com include_nif=true)
+    """
+    months = int(request.args.get("months") or 3)
+    q = (request.args.get("q") or "").strip()
+    only_nif = (request.args.get("only_nif") or "").strip() in ("1", "true", "True", "yes", "sim")
+
+    start_date = (date.today() - timedelta(days=30 * months))
+
+    sql = """
+      SELECT
+        p.id_pedido,
+        p.data_entrada,
+        p.data_prevista,
+        p.preco_total,
+        p.desconto,
+        p.include_nif,
+        p.observacoes,
+        c.id_client,
+        c.name AS client_name,
+        c.phone AS client_phone,
+        c.nif AS client_nif,
+        ps.id_pedido_servico,
+        ps.quantity,
+        ps.description,
+        ps.status,
+        s.name AS service_name
+      FROM pedidos p
+      JOIN clients c ON c.id_client = p.id_client
+      JOIN pedido_servicos ps ON ps.id_pedido = p.id_pedido
+      JOIN services s ON s.id_service = ps.id_service
+      WHERE p.data_entrada::date >= %s
+    """
+    params = [start_date]
+
+    if only_nif:
+        sql += " AND p.include_nif = true "
+
+    if q:
+        if q.isdigit():
+            # pedido_id exato ou telefone parcial
+            sql += " AND (p.id_pedido = %s OR c.phone ILIKE %s) "
+            params.extend([int(q), f"%{q}%"])
+        else:
+            sql += " AND (c.name ILIKE %s OR c.phone ILIKE %s OR COALESCE(c.nif,'') ILIKE %s) "
+            params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
+
+    sql += " ORDER BY p.data_entrada DESC, p.id_pedido DESC, ps.id_pedido_servico ASC "
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall() or []
+
+    # agrupar por pedido
+    pedidos = {}
+    for r in rows:
+        pid = r["id_pedido"]
+        if pid not in pedidos:
+            de = r["data_entrada"]
+            dp = r["data_prevista"]
+            pedidos[pid] = {
+                "id_pedido": pid,
+                "data_entrada": de.strftime("%Y-%m-%d %H:%M") if isinstance(de, datetime) else str(de),
+                "data_prevista": dp.strftime("%Y-%m-%d") if isinstance(dp, (datetime, date)) else str(dp),
+                "preco_total": float(r["preco_total"] or 0),
+                "desconto": float(r["desconto"] or 0),
+                "include_nif": bool(r["include_nif"]),
+                "observacoes": r.get("observacoes") or "",
+                "client": {
+                    "id": r["id_client"],
+                    "name": r["client_name"],
+                    "phone": r["client_phone"],
+                    "nif": r["client_nif"],
+                },
+                "services": [],
+            }
+        pedidos[pid]["services"].append(
+            {
+                "id_pedido_servico": r["id_pedido_servico"],
+                "service_name": r["service_name"],
+                "quantity": int(r["quantity"] or 1),
+                "description": r.get("description") or "",
+                "status": r.get("status") or "",
+            }
+        )
+
+    return jsonify({"start_date": start_date.strftime("%Y-%m-%d"), "results": list(pedidos.values())}), 200
+
 
 
 def _service_row_to_payload(r: dict) -> dict:
