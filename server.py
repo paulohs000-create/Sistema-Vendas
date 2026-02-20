@@ -786,6 +786,63 @@ def update_client_nif(client_id):
     return jsonify({"message": "NIF atualizado com sucesso."}), 200
 
 
+@app.get("/clients/by-id/<int:client_id>")
+@login_required(["admin", "caixa"])
+@handle_errors
+def get_client_by_id(client_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id_client, name, phone, nif FROM clients WHERE id_client = %s",
+                (client_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return jsonify({"error": "Cliente não encontrado."}), 404
+
+    return jsonify(
+        {"id": row["id_client"], "name": row["name"], "phone": row["phone"], "nif": row["nif"]}
+    ), 200
+
+
+@app.put("/clients/by-id/<int:client_id>")
+@login_required(["admin", "caixa"])
+@handle_errors
+def update_client_by_id(client_id):
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    nif = (data.get("nif") or "").strip() or None
+
+    if not name or not phone:
+        return jsonify({"error": "Nome e telefone são obrigatórios."}), 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # Impede duplicação de telefone em outro cliente
+            cur.execute(
+                "SELECT id_client FROM clients WHERE phone = %s AND id_client <> %s",
+                (phone, client_id),
+            )
+            exists = cur.fetchone()
+            if exists:
+                return jsonify({"error": "Já existe outro cliente com este telefone."}), 409
+
+            cur.execute(
+                "UPDATE clients SET name = %s, phone = %s, nif = %s WHERE id_client = %s",
+                (name, phone, nif, client_id),
+            )
+            updated = cur.rowcount
+        conn.commit()
+
+    if updated == 0:
+        return jsonify({"error": "Cliente não encontrado."}), 404
+
+    return jsonify({"message": "Cliente atualizado com sucesso."}), 200
+
+
+
 # -----------------------------------------------------------------------------
 # API - Services (CRUD)
 # -----------------------------------------------------------------------------
