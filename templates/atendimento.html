@@ -4,7 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sistema de Atendimento</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com">        window.__APP_READY__ = true;
+
+    </script>
 
     <!-- QZ Tray -->
     <script src="https://cdn.jsdelivr.net/npm/qz-tray/qz-tray.js"></script>
@@ -17,6 +19,8 @@
     </style>
 </head>
 <body class="min-h-screen bg-[#f7f3f1]">
+<div id="js-error-banner" class="hidden fixed top-3 left-1/2 -translate-x-1/2 z-[9999] max-w-3xl w-[95%] bg-red-50 border border-red-200 text-red-800 px-4 py-2 rounded-xl shadow"></div>
+
   <div id="sidebar-overlay" class="fixed inset-0 bg-black/40 hidden z-40"></div>
   <div class="flex min-h-screen">
     <!-- Sidebar -->
@@ -261,7 +265,27 @@
         const API_URL = `${window.location.protocol}//${window.location.host}`;
 
 
-        // ============================
+        
+        // Debug/robustness: mostra erro JS (se existir) e marca app pronta
+        window.__APP_READY__ = false;
+        window.addEventListener("error", (ev) => {
+            console.error("JS ERROR:", ev.error || ev.message);
+            const box = document.getElementById("js-error-banner");
+            if (box) {
+                box.textContent = "Erro de JavaScript: " + (ev.message || "ver console");
+                box.classList.remove("hidden");
+            }
+        });
+        window.addEventListener("unhandledrejection", (ev) => {
+            console.error("PROMISE ERROR:", ev.reason);
+            const box = document.getElementById("js-error-banner");
+            if (box) {
+                box.textContent = "Erro (promise): " + (ev.reason?.message || ev.reason || "ver console");
+                box.classList.remove("hidden");
+            }
+        });
+
+// ============================
         // Sidebar (tablet): abrir/fechar e ocultar automaticamente após "Next"
         // ============================
         function openSidebar() {
