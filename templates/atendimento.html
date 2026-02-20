@@ -266,8 +266,7 @@ function nextDocNumber(prefix, year) {
 
             // ✅ ajuste: remover "OT" do número (imprime só o número)
             const docNumber = receiptData.documentNumber || String(receiptData.pedido_id).padStart(6, "0");
-
-            const clientNif = receiptData.clientNif ? receiptData.clientNif : "---------";
+            // NIF do cliente só deve aparecer se o checkbox "Adicionar Contribuinte" estiver marcado
             const clientName = receiptData.clientName || "";
             const clientMorada = receiptData.clientAddressOrNotes || (receiptData.notes || "");
 
@@ -308,7 +307,9 @@ function nextDocNumber(prefix, year) {
             out.push(twoCol("Vencimento", vencStr));
             out.push("\n");
 
-            out.push("NIF: " + clientNif + "\n");
+            if (receiptData.includeNif && receiptData.nif && String(receiptData.nif).trim()) {
+                out.push("NIF: " + String(receiptData.nif).trim() + "\n");
+            }
             out.push("Nome: " + clientName + "\n");
             if (clientMorada && String(clientMorada).trim()) {
                 out.push("Morada: " + String(clientMorada).trim() + "\n");
