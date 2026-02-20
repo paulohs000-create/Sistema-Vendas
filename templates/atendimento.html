@@ -1080,8 +1080,10 @@ const handleClientSearch = async () => {
             }
         };
 
-        const addServiceToOrder = (service, quantity, description) => {
-            selectedServices.push({ ...service, quantity, description });
+        const addServiceToOrder = (service, quantity = 1, description = "") => {
+            const q = (quantity === undefined || quantity === null || quantity === "") ? 1 : Number(quantity);
+            const desc = (description === undefined || description === null) ? "" : String(description);
+            selectedServices.push({ ...service, quantity: isNaN(q) ? 1 : q, description: desc });
             renderOrderSummary();
         };
 
@@ -1093,7 +1095,21 @@ const handleClientSearch = async () => {
             serviceDetailsModal.classList.remove('hidden');
         };
 
-        const closeServiceModal = () => {
+        
+        // Expor funções globais usadas nos botões inline do resumo
+        window.editService = (index) => {
+            const svc = selectedServices[index];
+            if (!svc) return;
+            openServiceModal('edit', svc, index);
+        };
+
+        window.removeService = (index) => {
+            if (index < 0 || index >= selectedServices.length) return;
+            selectedServices.splice(index, 1);
+            renderOrderSummary();
+        };
+
+const closeServiceModal = () => {
             serviceDetailsModal.classList.add('hidden');
             currentServiceAction = null;
         };
@@ -1324,7 +1340,7 @@ globalSearchBox?.addEventListener("click", (e) => {
             currentCategory = cat;
 
             // Adiciona o serviço direto ao pedido
-            addServiceToOrder({ nome: name, preco: price, description: "", categoria: cat });
+            addServiceToOrder({ nome: name, preco: price, categoria: cat }, 1, "");
 
             // Limpa UI de busca
             renderGlobalResults([]);
