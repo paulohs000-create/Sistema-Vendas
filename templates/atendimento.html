@@ -95,7 +95,10 @@
               <div class="flex flex-col sm:flex-row gap-3 sm:items-center">
                 <div class="flex-1">
                   <label class="block text-sm font-medium text-gray-700 mb-1">Buscar serviço (todas as categorias)</label>
-                  <input id="global-service-search" type="text" placeholder="Ex: bainha, ajuste, zip..." class="w-full border border-gray-300 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-400">
+                  <div class="flex gap-2">
+                    <input id="global-service-search" type="text" placeholder="Ex: bainha, ajuste, zip..." class="flex-1 border border-gray-300 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-400">
+                    <button id="global-service-search-btn" type="button" class="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-semibold">Buscar</button>
+                  </div>
                   <div id="global-service-search-hint" class="text-xs text-gray-500 mt-1">Digite para filtrar itens em todas as categorias.</div>
                 </div>
                 <div class="flex gap-2 sm:justify-end">
@@ -610,6 +613,8 @@ async function printReceipt(receiptData) {
         let currentClient = null;
         
         let cachedServices = null; // cache de serviços
+        let currentCategory = null; // categoria selecionada
+
 let selectedServices = [];
         let currentServiceAction = null;
 
@@ -995,7 +1000,7 @@ const handleClientSearch = async () => {
                 const button = document.createElement('button');
                 button.className = 'w-full text-center p-6 rounded-xl bg-purple-50 hover:bg-purple-200 border-2 border-purple-100 hover:border-purple-300 text-purple-800 font-bold transition-all duration-300 transform hover:scale-105';
                 button.textContent = category;
-                button.onclick = () => displaySpecificServices(category);
+                button.onclick = () => { currentCategory = category; const hint = document.getElementById("global-service-search-hint"); if (hint) hint.textContent = "Categoria selecionada. Você pode avançar ou escolher um serviço."; displaySpecificServices(category); };
                 serviceCategoriesDiv.appendChild(button);
             });
         }
@@ -1205,14 +1210,15 @@ searchClientButton.addEventListener('click', handleClientSearch);
 
         document.getElementById("btn-next-to-services")?.addEventListener("click", () => {
             if (currentCategory) {
-                showServicesForCategory(currentCategory);
+                displaySpecificServices(currentCategory);
             } else {
                 const hint = document.getElementById("global-service-search-hint");
-                if (hint) hint.textContent = "Selecione uma categoria ou busque um serviço acima.";
+                if (hint) hint.textContent = "Selecione uma categoria ou pesquise um serviço antes de avançar.";
+                const input = document.getElementById("global-service-search");
+                if (input) input.focus();
             }
         });
-
-        // Busca global de serviços (todas categorias)
+// Busca global de serviços (todas categorias)
         const globalSearchInput = document.getElementById("global-service-search");
         const globalSearchBox = document.getElementById("global-search-results");
 
@@ -1249,8 +1255,9 @@ searchClientButton.addEventListener('click', handleClientSearch);
             return cachedServices;
         }
 
-        globalSearchInput?.addEventListener("input", async () => {
-            const q = normalizeText(globalSearchInput.value).trim();
+        
+        async function runGlobalSearch() {
+            const q = normalizeText(globalSearchInput?.value || "").trim();
             if (!q || q.length < 2) {
                 renderGlobalResults([]);
                 return;
@@ -1269,9 +1276,17 @@ searchClientButton.addEventListener('click', handleClientSearch);
                 return hay.includes(q);
             }).slice(0, 25);
             renderGlobalResults(results);
+        }
+
+        globalSearchInput?.addEventListener("input", () => {
+            // Mantém a busca automática enquanto digita
+            runGlobalSearch();
         });
 
-        globalSearchBox?.addEventListener("click", (e) => {
+        document.getElementById("global-service-search-btn")?.addEventListener("click", () => {
+            runGlobalSearch();
+        });
+globalSearchBox?.addEventListener("click", (e) => {
             const btn = e.target.closest("button[data-cat]");
             if (!btn) return;
             const cat = btn.getAttribute("data-cat");
