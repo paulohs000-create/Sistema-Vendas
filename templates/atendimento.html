@@ -16,9 +16,31 @@
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
-<body class="flex items-center justify-center min-h-screen p-4">
+<body class="min-h-screen bg-[#f7f3f1]">
+  <div class="flex min-h-screen">
+    <!-- Sidebar -->
+    <aside class="w-72 bg-white border-r border-gray-200 p-4 hidden md:block">
+      <div class="flex items-center gap-3 mb-6">
+        <div class="w-10 h-10 rounded-xl bg-purple-600 text-white flex items-center justify-center font-bold">SV</div>
+        <div>
+          <div class="font-bold leading-5 text-gray-900">Sistema de Vendas</div>
+          <div class="text-xs text-gray-500">Atendimento</div>
+        </div>
+      </div>
+      <div class="text-sm text-gray-600 mb-4">Logado como: <span class="font-semibold text-gray-900">{{ user or "" }}</span></div>
+      <nav class="space-y-2">
+        <button id="nav-atendimento" class="w-full text-left px-3 py-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-800 font-semibold">🧾 <span class="ml-2">Atendimento</span></button>
+        <button id="nav-clientes" class="w-full text-left px-3 py-2 rounded-xl hover:bg-gray-50 text-gray-800">👤 <span class="ml-2">Clientes</span></button>
+        <button id="nav-historico" class="w-full text-left px-3 py-2 rounded-xl hover:bg-gray-50 text-gray-800">🕒 <span class="ml-2">Últimos 3 meses</span></button>
+        <a href="/logout?next=/login" class="block text-center mt-6 px-4 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 font-semibold border border-red-200">Sair</a>
+      </nav>
+    </aside>
+    <!-- Main -->
+    <main class="flex-1 p-4 sm:p-6 flex items-start justify-center">
 
-    <div id="main-application" class="bg-white p-8 sm:p-10 rounded-2xl shadow-2xl w-full max-w-2xl space-y-8">
+
+    <section id="section-atendimento">
+  <div id="main-application" class="bg-white p-8 sm:p-10 rounded-2xl shadow-2xl w-full max-w-2xl space-y-8">
         
         <header id="main-header" class="text-center">
             <h1 class="text-3xl sm:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600">
@@ -30,12 +52,13 @@
         <div id="client-section" class="space-y-6 fade-in">
             <h2 class="text-2xl font-semibold text-gray-800 border-b pb-3">1. Encontre o Cliente</h2>
             <div>
-                <label for="telefone" class="block text-gray-700 font-medium mb-1">Telefone</label>
+                <label for="telefone" class="block text-gray-700 font-medium mb-1">Telefone ou Nome</label>
                 <div class="flex space-x-2">
-                    <input type="tel" id="telefone" placeholder="912 345 678" class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
+                    <input type="tel" id="telefone" placeholder="Telefone ou nome..." class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500">
                     <button id="search-client-button" class="bg-purple-600 text-white py-2 px-6 rounded-lg font-semibold hover:bg-purple-700 transition-colors">Buscar</button>
                 </div>
                 <p id="client-info" class="text-gray-600 text-base font-semibold mt-3 h-6"></p>
+<div id="client-search-results" class="mt-3 space-y-2"></div>
             </div>
             <div id="client-details-input" class="hidden space-y-4">
                 <div>
@@ -118,6 +141,39 @@
              </div>
         </div>
     </div>
+</section>
+
+<section id="section-clientes" class="hidden w-full max-w-2xl">
+  <div class="bg-white p-8 sm:p-10 rounded-2xl shadow-2xl w-full space-y-6">
+    <h2 class="text-2xl font-bold text-gray-900">Clientes</h2>
+    <p class="text-gray-500">Buscar por telefone ou nome.</p>
+    <div class="flex gap-2">
+      <input id="clients-search-input" type="text" placeholder="Telefone ou nome..." class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500"/>
+      <button id="clients-search-button" class="bg-purple-600 text-white py-2 px-6 rounded-lg font-semibold hover:bg-purple-700">Buscar</button>
+    </div>
+    <div id="clients-search-results" class="space-y-2"></div>
+  </div>
+</section>
+
+<section id="section-historico" class="hidden w-full max-w-2xl">
+  <div class="bg-white p-8 sm:p-10 rounded-2xl shadow-2xl w-full space-y-6">
+    <div class="flex items-start justify-between gap-4">
+      <div>
+        <h2 class="text-2xl font-bold text-gray-900">Serviços dos últimos 3 meses</h2>
+        <p class="text-gray-500">Use a busca para localizar um cliente/pedido.</p>
+      </div>
+      <label class="inline-flex items-center gap-2 text-sm text-gray-700 select-none">
+        <input id="hist-only-nif" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+        Somente com NIF
+      </label>
+    </div>
+    <div class="flex gap-2">
+      <input id="hist-search-input" type="text" placeholder="Nome, telefone, NIF ou nº pedido..." class="w-full px-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500"/>
+      <button id="hist-search-button" class="bg-purple-600 text-white py-2 px-6 rounded-lg font-semibold hover:bg-purple-700">Buscar</button>
+    </div>
+    <div id="hist-results" class="space-y-4"></div>
+  </div>
+</section>
 
     <div id="service-details-modal" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center p-4 z-50 hidden">
         <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md space-y-6">
@@ -445,37 +501,220 @@ async function printReceipt(receiptData) {
         let selectedServices = [];
         let currentServiceAction = null;
 
-        const handleClientSearch = async () => {
-            const phone = telefoneInput.value.trim();
-            clientDetailsInputDiv.classList.add('hidden');
-            continueToServicesButton.classList.add('hidden');
-            if (!phone) {
-                clientInfoParagraph.textContent = 'Por favor, insira um número de telefone.';
-                clientInfoParagraph.className = 'text-red-500 text-base font-semibold mt-3 h-6';
-                return;
-            }
-            clientInfoParagraph.textContent = 'A buscar...';
-            try {
-                const response = await fetch(`${API_URL}/clients/${phone}`);
-                if (response.status === 404) {
-                    clientInfoParagraph.textContent = 'Cliente não encontrado. Por favor, preencha os dados para cadastro.';
-                    clientInfoParagraph.className = 'text-blue-600 text-base font-semibold mt-3 h-6';
-                    clientDetailsInputDiv.classList.remove('hidden');
-                } else if (response.ok) {
-                    currentClient = await response.json();
-                    clientInfoParagraph.innerHTML = `Cliente encontrado: <strong class="text-purple-700">${currentClient.name}</strong>`;
+
+// ============================
+// Navegação (Sidebar)
+// ============================
+const sectionAtendimento = document.getElementById('section-atendimento');
+const sectionClientes = document.getElementById('section-clientes');
+const sectionHistorico = document.getElementById('section-historico');
+
+function setActiveNav(active) {
+    const btnA = document.getElementById('nav-atendimento');
+    const btnC = document.getElementById('nav-clientes');
+    const btnH = document.getElementById('nav-historico');
+    const all = [btnA, btnC, btnH].filter(Boolean);
+    all.forEach(b => b.className = "w-full text-left px-3 py-2 rounded-xl hover:bg-gray-50 text-gray-800");
+    if (active === "atendimento" && btnA) btnA.className = "w-full text-left px-3 py-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-800 font-semibold";
+    if (active === "clientes" && btnC) btnC.className = "w-full text-left px-3 py-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-800 font-semibold";
+    if (active === "historico" && btnH) btnH.className = "w-full text-left px-3 py-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-800 font-semibold";
+}
+
+function showSection(which) {
+    if (sectionAtendimento) sectionAtendimento.classList.toggle('hidden', which !== 'atendimento');
+    if (sectionClientes) sectionClientes.classList.toggle('hidden', which !== 'clientes');
+    if (sectionHistorico) sectionHistorico.classList.toggle('hidden', which !== 'historico');
+    setActiveNav(which);
+}
+
+document.getElementById('nav-atendimento')?.addEventListener('click', () => showSection('atendimento'));
+document.getElementById('nav-clientes')?.addEventListener('click', () => showSection('clientes'));
+document.getElementById('nav-historico')?.addEventListener('click', () => { showSection('historico'); loadHistorico(); });
+
+// ============================
+// Clientes (aba)
+// ============================
+async function loadClientsSearch(q) {
+    const box = document.getElementById('clients-search-results');
+    if (!box) return;
+    box.innerHTML = '<div class="text-gray-500">A carregar...</div>';
+    try {
+        const resp = await fetch(`${API_URL}/clients/search?q=${encodeURIComponent(q)}`);
+        const data = await resp.json().catch(() => ({ results: [] }));
+        const results = data.results || [];
+        if (!results.length) {
+            box.innerHTML = '<div class="text-gray-500">Nenhum cliente encontrado.</div>';
+            return;
+        }
+        box.innerHTML = results.map(c => `
+            <div class="p-3 rounded-lg border border-gray-200">
+                <div class="font-semibold text-gray-900">${c.name}</div>
+                <div class="text-sm text-gray-500">${c.phone || ''} ${c.nif ? ' • NIF ' + c.nif : ''}</div>
+            </div>
+        `).join('');
+    } catch (e) {
+        console.error(e);
+        box.innerHTML = '<div class="text-red-600">Erro ao buscar clientes.</div>';
+    }
+}
+
+document.getElementById('clients-search-button')?.addEventListener('click', () => {
+    const q = document.getElementById('clients-search-input')?.value?.trim() || '';
+    if (!q) return;
+    loadClientsSearch(q);
+});
+
+document.getElementById('clients-search-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        document.getElementById('clients-search-button')?.click();
+    }
+});
+
+// ============================
+// Histórico (últimos 3 meses)
+// ============================
+function renderHistorico(items) {
+    const box = document.getElementById('hist-results');
+    if (!box) return;
+    if (!items.length) {
+        box.innerHTML = '<div class="text-gray-500">Nenhum pedido encontrado nos últimos 3 meses.</div>';
+        return;
+    }
+
+    box.innerHTML = items.map(p => {
+        const badge = p.include_nif ? '<span class="text-xs px-2 py-1 rounded-full bg-green-50 text-green-700 border border-green-200">Com NIF</span>' : '<span class="text-xs px-2 py-1 rounded-full bg-gray-50 text-gray-700 border border-gray-200">Sem NIF</span>';
+        const services = (p.services || []).map(s => `<li class="text-sm text-gray-700">${s.quantity}× ${s.service_name}${s.description ? ' — ' + s.description : ''} <span class="text-xs text-gray-500">(${s.status || '—'})</span></li>`).join('');
+        return `
+            <div class="p-4 rounded-xl border border-gray-200">
+                <div class="flex items-start justify-between gap-3">
+                    <div>
+                        <div class="font-semibold text-gray-900">${p.client?.name || '-'}</div>
+                        <div class="text-sm text-gray-500">${p.client?.phone || ''} ${p.client?.nif ? ' • NIF ' + p.client.nif : ''}</div>
+                        <div class="text-sm text-gray-500">Pedido #${p.id_pedido} • Entrada: ${p.data_entrada} • Entrega: ${p.data_prevista}</div>
+                    </div>
+                    <div class="flex flex-col items-end gap-2">
+                        ${badge}
+                        <div class="text-sm font-semibold text-gray-900">€ ${(p.preco_total || 0).toFixed(2)}</div>
+                    </div>
+                </div>
+                ${p.observacoes ? `<div class="mt-3 text-sm text-gray-700"><span class="font-semibold">Obs:</span> ${p.observacoes}</div>` : ''}
+                <div class="mt-3">
+                    <div class="text-sm font-semibold text-gray-800 mb-1">Serviços:</div>
+                    <ul class="list-disc pl-5 space-y-1">${services}</ul>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+async function loadHistorico() {
+    const box = document.getElementById('hist-results');
+    if (!box) return;
+    box.innerHTML = '<div class="text-gray-500">A carregar...</div>';
+
+    const q = document.getElementById('hist-search-input')?.value?.trim() || '';
+    const only = document.getElementById('hist-only-nif')?.checked ? '1' : '';
+    const url = `${API_URL}/pedidos/recentes?months=3${q ? `&q=${encodeURIComponent(q)}` : ''}${only ? '&only_nif=1' : ''}`;
+
+    try {
+        const resp = await fetch(url);
+        const data = await resp.json();
+        renderHistorico(data.results || []);
+    } catch (e) {
+        console.error(e);
+        box.innerHTML = '<div class="text-red-600">Erro ao carregar histórico.</div>';
+    }
+}
+
+document.getElementById('hist-search-button')?.addEventListener('click', loadHistorico);
+document.getElementById('hist-search-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        loadHistorico();
+    }
+});
+document.getElementById('hist-only-nif')?.addEventListener('change', loadHistorico);
+
+        // seção padrão
+        showSection('atendimento');
+
+
+        
+const handleClientSearch = async () => {
+    const q = telefoneInput.value.trim();
+    clientDetailsInputDiv.classList.add('hidden');
+    continueToServicesButton.classList.add('hidden');
+    document.getElementById('client-search-results').innerHTML = '';
+    currentClient = null;
+
+    if (!q) {
+        clientInfoParagraph.textContent = 'Por favor, insira um telefone ou nome.';
+        clientInfoParagraph.className = 'text-red-500 text-base font-semibold mt-3 h-6';
+        return;
+    }
+
+    clientInfoParagraph.textContent = 'A buscar...';
+    clientInfoParagraph.className = 'text-gray-600 text-base font-semibold mt-3 h-6';
+
+    try {
+        // 1) Busca ampla (telefone parcial ou nome)
+        const resp = await fetch(`${API_URL}/clients/search?q=${encodeURIComponent(q)}`);
+        const data = await resp.json().catch(() => ({ results: [] }));
+        const results = data.results || [];
+
+        // Se digitou exatamente um telefone e achou 1, seleciona direto
+        if (results.length === 1) {
+            currentClient = results[0];
+            clientInfoParagraph.innerHTML = `Cliente encontrado: <strong class="text-purple-700">${currentClient.name}</strong>`;
+            clientInfoParagraph.className = 'text-green-600 text-base font-semibold mt-3 h-6';
+            continueToServicesButton.classList.remove('hidden');
+            return;
+        }
+
+        if (results.length > 1) {
+            clientInfoParagraph.textContent = 'Selecione o cliente:';
+            clientInfoParagraph.className = 'text-blue-600 text-base font-semibold mt-3 h-6';
+
+            const container = document.getElementById('client-search-results');
+            container.innerHTML = results.map(c => `
+                <button data-client-id="${c.id}" class="w-full text-left p-3 rounded-lg border border-gray-200 hover:bg-gray-50">
+                    <div class="font-semibold text-gray-900">${c.name}</div>
+                    <div class="text-sm text-gray-500">${c.phone || ''} ${c.nif ? ' • NIF ' + c.nif : ''}</div>
+                </button>
+            `).join('');
+
+            container.querySelectorAll('button[data-client-id]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const id = parseInt(btn.getAttribute('data-client-id'), 10);
+                    const found = results.find(x => x.id === id);
+                    if (!found) return;
+                    currentClient = found;
+                    container.innerHTML = '';
+                    clientInfoParagraph.innerHTML = `Cliente selecionado: <strong class="text-purple-700">${currentClient.name}</strong>`;
                     clientInfoParagraph.className = 'text-green-600 text-base font-semibold mt-3 h-6';
                     continueToServicesButton.classList.remove('hidden');
-                } else {
-                    const errorData = await response.json().catch(() => ({ error: 'Erro desconhecido.' }));
-                    throw new Error(errorData.error || 'Erro ao buscar cliente.');
-                }
-            } catch (error) {
-                console.error(error);
-                clientInfoParagraph.textContent = error.message;
-                clientInfoParagraph.className = 'text-red-500 text-base font-semibold mt-3 h-6';
-            }
-        };
+                });
+            });
+            return;
+        }
+
+        // Nenhum resultado: abre cadastro
+        clientInfoParagraph.textContent = 'Cliente não encontrado. Por favor, preencha os dados para cadastro.';
+        clientInfoParagraph.className = 'text-blue-600 text-base font-semibold mt-3 h-6';
+        clientDetailsInputDiv.classList.remove('hidden');
+
+        // Se a busca foi por telefone (só dígitos), mantém no campo telefone e ajuda o cadastro
+        if (/^\d+$/.test(q)) {
+            telefoneInput.value = q;
+        }
+    } catch (e) {
+        console.error(e);
+        clientInfoParagraph.textContent = 'Erro ao buscar cliente.';
+        clientInfoParagraph.className = 'text-red-500 text-base font-semibold mt-3 h-6';
+    }
+};
+
 
         const handleClientRegistration = async () => {
             const name = clientNameInput.value.trim();
@@ -643,6 +882,7 @@ async function printReceipt(receiptData) {
                 clientId: clientId,
                 deliveryDate: deliveryDate,
                 comments: comments,
+                    include_nif: !!document.getElementById('nif-checkbox')?.checked,
                 discount: discount,
                 totalPrice: totalPrice,
                 services: selectedServices.map(s => ({
@@ -695,9 +935,7 @@ async function printReceipt(receiptData) {
                 };
 
                 await printReceipt(receiptData);
-
-                alert(`Pedido #${result.pedido_id} criado e impresso com sucesso!`);
-                window.location.reload();
+window.location.reload();
 
             } catch (error) {
                 console.error(error);
@@ -749,5 +987,7 @@ async function printReceipt(receiptData) {
         });
 
     </script>
+    </main>
+  </div>
 </body>
 </html>
