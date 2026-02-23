@@ -416,6 +416,10 @@ async function tryEnableQZSecurity() {
             throw new Error("certificate PEM inválido (não contém BEGIN CERTIFICATE)");
         }
 
+    // Garantir que o algoritmo de assinatura do QZ coincide com o backend
+    // (evita 'Invalid Signature')
+    try { qz.security.setSignatureAlgorithm('SHA256'); } catch (e) {}
+
         qz.security.setCertificatePromise((resolve, reject) => resolve(certPem));
 
         // 2) Teste rápido do signer (se falhar, não habilita modo estrito)
