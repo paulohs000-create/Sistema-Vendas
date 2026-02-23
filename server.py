@@ -465,7 +465,7 @@ def qz_sign():
     try:
         pkey = crypto.load_privatekey(crypto.FILETYPE_PEM, private_key_bytes)
         signature = crypto.sign(pkey, data, "sha256")
-        signature_b64 = base64.b64encode(signature).decode("utf-8")
+        signature_b64 = base64.b64encode(signature).decode("utf-8").strip()
         return signature_b64, 200, {"Content-Type": "text/plain; charset=utf-8"}
     except Exception as e:
         print(f"[QZ] Falha ao assinar: {e}")
