@@ -130,8 +130,8 @@ def login_required(roles: list[str] | None = None):
         @wraps(f)
         def wrapper(*args, **kwargs):
             if not session.get("user"):
-                return redirect("/login")
-            if roles:
+                return redirect("/login?next=" + request.path)
+if roles:
                 if session.get("role") not in roles:
                     return jsonify({"error": "Acesso negado."}), 403
             return f(*args, **kwargs)
