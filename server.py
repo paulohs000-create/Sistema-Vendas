@@ -1466,7 +1466,10 @@ def qz_sign():
 
     try:
         pkey = crypto.load_privatekey(crypto.FILETYPE_PEM, private_key_pem.encode("utf-8"))
-        signature = crypto.sign(pkey, data, "sha256")
+        alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip()
+        if alg not in ("sha256", "sha1"):
+            alg = "sha256"
+        signature = crypto.sign(pkey, data, alg)
         signature_b64 = base64.b64encode(signature).decode("utf-8").strip()
         # Resposta precisa ser TEXTO (não JSON)
         return Response(signature_b64, mimetype="text/plain; charset=utf-8")
