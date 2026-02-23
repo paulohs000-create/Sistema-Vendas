@@ -4,9 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sistema de Atendimento</title>
-    <script src="https://cdn.tailwindcss.com">        window.__APP_READY__ = true;
-
-    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
 
     <!-- QZ Tray -->
     <script src="https://cdn.jsdelivr.net/npm/qz-tray/qz-tray.js"></script>
@@ -264,8 +262,12 @@
         </div>
       </div>
 
-    <script>
-        const API_URL = `${window.location.protocol}//${window.location.host}`;
+    
+    </main>
+  </div>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+const API_URL = `${window.location.protocol}//${window.location.host}`;
 
 
         
@@ -379,111 +381,14 @@ function nextDocNumber(prefix, year) {
             phone: "925 442 437",
         };
 
-        
-// ============================
-// QZ Tray: conexão segura (para evitar popups)
-// ============================
-let __qzSecurityEnabled = false;
-let __qzSignatureAlgo = "SHA256";
-
-async function waitForQZ(maxMs = 8000) {
-    const start = Date.now();
-    while (!window.qz || !qz.websocket) {
-        if (Date.now() - start > maxMs) {
-            throw new Error("QZ Tray JS não carregou (window.qz indisponível).");
-        }
-        await new Promise(r => setTimeout(r, 100));
-    }
-}
-
-// Ativa certificado + assinatura. Se algo falhar, retornamos false (não quebra o fluxo atual).
-async function tryEnableQZSecurity() {
-    if (__qzSecurityEnabled) return true;
-
-    await waitForQZ();
-
-    // Nem toda versão do QZ tem esses métodos, por isso usamos try/catch
-    try { if (qz.security && qz.security.setSignatureAlgorithm) qz.security.setSignatureAlgorithm(__qzSignatureAlgo); } catch (e) {}
-
-    if (!qz.security || !qz.security.setCertificatePromise || !qz.security.setSignaturePromise) {
-        return false;
-    }
-
-    // Certificado público (PEM)
-    qz.security.setCertificatePromise((resolve, reject) => {
-        fetch(`${API_URL}/static/qz/certificate.pem`, { cache: "no-store" })
-            .then(r => {
-                if (!r.ok) throw new Error("Falha ao carregar certificate.pem");
-                return r.text();
-            })
-            .then(txt => resolve(txt))
-            .catch(reject);
-    });
-
-    // Assinatura no backend: retorna BASE64 puro (sem JSON/HTML)
-    qz.security.setSignaturePromise((toSign) => (resolve, reject) => {
-        fetch(`${API_URL}/qz/sign`, {
-            method: "POST",
-            headers: { "Content-Type": "text/plain" },
-            body: toSign
-        })
-        .then(async r => {
-            const t = await r.text();
-            if (!r.ok) throw new Error(t || "Falha em /qz/sign");
-            const s = (t || "").trim();
-            // Proteção: se vier HTML/JSON por engano, rejeita
-            if (!s || s.startsWith("<") || s.startsWith("{") || s.length < 50) {
-                throw new Error("Assinatura inválida retornada por /qz/sign");
+        async function conectarQZ() {
+            if (!window.qz) throw new Error("QZ Tray não carregou.");
+            if (!qz.websocket.isActive()) {
+                await qz.websocket.connect();
             }
-            resolve(s);
-        })
-        .catch(reject);
-    });
-
-    // Probe rápido para garantir que /qz/sign está OK (senão não força modo assinado)
-    try {
-        const probe = await fetch(`${API_URL}/qz/sign`, {
-            method: "POST",
-            headers: { "Content-Type": "text/plain" },
-            body: "probe"
-        });
-        const pt = (await probe.text()).trim();
-        if (!probe.ok || !pt || pt.startsWith("<") || pt.startsWith("{") || pt.length < 20) return false;
-    } catch (e) {
-        return false;
-    }
-
-    __qzSecurityEnabled = true;
-    return true;
-}
-
-// Garante conexão: se security habilitar, reconecta para aplicar certificado/assinatura
-async function ensureQZConnection(requireSigned = false) {
-    await waitForQZ();
-
-    const signedOk = await tryEnableQZSecurity();
-    if (requireSigned && !signedOk) {
-        throw new Error("QZ: assinatura não está pronta (verifique /qz/sign e certificate.pem).");
-    }
-
-    // Se já conectado, e agora temos security, reconecta para evitar sessão anônima
-    if (qz.websocket.isActive()) {
-        if (signedOk) {
-            try { await qz.websocket.disconnect(); } catch (e) {}
-        } else {
-            return;
         }
-    }
-    await qz.websocket.connect();
-}
 
-// Mantém compatibilidade com o resto do código
-async function conectarQZ() {
-    // Para imprimir sem popup, a chamada de impressão usa ensureQZConnection(true)
-    await ensureQZConnection(false);
-}
-
-function line(char='-') {
+        function line(char='-') {
             return (char.repeat(PAPER_WIDTH_CHARS)).slice(0, PAPER_WIDTH_CHARS) + "\n";
         }
 
@@ -637,7 +542,7 @@ out.push(STORE_INFO.email + "\n");
         }
 
         async function printWithQZ(receiptData) {
-            await ensureQZConnection(true);
+            await conectarQZ();
             const config = qz.configs.create(PRINTER_NAME);
 
             const viaCliente = buildReceiptEscPos(receiptData, "VIA CLIENTE");
@@ -655,12 +560,23 @@ out.push(STORE_INFO.email + "\n");
             await qz.print(config, payload);
         }
 
-
 async function printReceipt(receiptData) {
-            // Impressão via QZ Tray (silenciosa). Se o QZ não estiver pronto/assinado,
-            // o QZ pode pedir autorização 1x (isso é do próprio QZ, não do site).
+            if (PRINT_MODE === "http") {
+                // Backend precisa expor POST /print que receba receiptData e imprima no servidor/local.
+                const resp = await fetch(`${API_URL}/print`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(receiptData)
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.error || "Falha ao imprimir via HTTP.");
+                }
+                return;
+            }
+            // padrão: QZ
             await printWithQZ(receiptData);
-        }}
+        }
 
                 // ============================
         // APP (Atendimento)
@@ -702,7 +618,6 @@ async function printReceipt(receiptData) {
         let currentCategory = null; // categoria selecionada
 
 let selectedServices = [];
-let isFinalizingOrder = false;
         let currentServiceAction = null;
 
 
@@ -1208,107 +1123,35 @@ const closeServiceModal = () => {
             if (action === 'add') { addServiceToOrder(service, quantity, description); }
             closeServiceModal();
         };
-const finalizeOrder = async () => {
-    if (isFinalizingOrder) return;
 
-    isFinalizingOrder = true;
-    finalizeOrderButton.disabled = true;
-    finalizeOrderButton.classList.add("opacity-60", "cursor-not-allowed");
+        const finalizeOrder = async () => {
+            const deliveryDate = document.getElementById('delivery-date').value;
+            const comments = document.getElementById('order-comments').value;
+            const discount = parseFloat(document.getElementById('discount-input').value) || 0;
 
-    try {
-        if (!selectedClient) {
-            alert("Selecione um cliente antes de finalizar.");
-            return;
-        }
-        if (!selectedServices || selectedServices.length === 0) {
-            alert("Selecione pelo menos um serviço antes de finalizar.");
-            return;
-        }
+            if (!deliveryDate) { alert('Por favor, selecione uma data de entrega prevista.'); return; }
 
-        const includeNif = nifCheckbox && nifCheckbox.checked;
-        const nifValue = includeNif ? (nifInput ? (nifInput.value || "").trim() : "") : "";
+            let subtotal = 0;
+            selectedServices.forEach(s => { subtotal += s.preco * s.quantity; });
+            const totalPrice = subtotal - discount;
 
-        if (includeNif && !nifValue) {
-            alert("Marcou NIF, mas não informou o NIF. Preencha o NIF ou desmarque a opção.");
-            return;
-        }
+            const clientId = currentClient.id_client || currentClient.id;
 
-        const payload = {
-            id_cliente: selectedClient.id_cliente,
-            services: selectedServices.map(s => ({ id_service: s.id_service, qty: s.qty || 1 })),
-            notes: generalNotesInput ? (generalNotesInput.value || "") : "",
-            delivery_date: deliveryDateInput ? deliveryDateInput.value : "",
-            discount: discountInput ? (discountInput.value || "0") : "0",
-            include_nif: includeNif,
-            nif: nifValue
-        };
-
-        const response = await fetch("/pedidos", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) {
-            const txt = await response.text();
-            throw new Error(txt || "Erro ao criar pedido");
-        }
-
-        const result = await response.json();
-
-        // Monta dados do recibo com numeração controlada no backend
-        const receiptData = {
-            customerName: selectedClient.nome,
-            customerPhone: selectedClient.phone || "",
-            customerNif: includeNif ? nifValue : "",
-            includeNif: includeNif,
-            services: selectedServices.map(s => ({
-                name: s.service_name,
-                qty: s.qty || 1,
-                price: s.price,
-                total: (s.price || 0) * (s.qty || 1)
-            })),
-            notes: payload.notes,
-            deliveryDate: payload.delivery_date,
-            discount: parseFloat(payload.discount || "0") || 0,
-            total: parseFloat(totalValue.textContent.replace("€", "").trim()) || 0,
-            documentType: (result && result.document_type === "FR") ? "Fatura" : "OT",
-            documentNumber: (result && result.document_number) ? result.document_number : "",
-            currentDate: new Date().toLocaleDateString("pt-PT"),
-        };
-
-        // Imprime com QZ (silencioso). Se o QZ pedir trust, é 1x por site.
-        await printReceipt(receiptData);
-
-        // Reset UI
-        selectedServices = [];
-        selectedClient = null;
-        clientSearchInput.value = "";
-        clientResultContainer.innerHTML = "";
-        selectedClientName.textContent = "";
-        selectedClientPhone.textContent = "";
-        updateSelectedServicesUI();
-        if (generalNotesInput) generalNotesInput.value = "";
-        if (discountInput) discountInput.value = "0";
-        if (deliveryDateInput) deliveryDateInput.value = "";
-        if (nifCheckbox) nifCheckbox.checked = false;
-        if (nifInput) nifInput.value = "";
-        updateNifDisplay();
-
-        alert("Pedido finalizado com sucesso!");
-        orderSummarySection.classList.add("hidden");
-        step2Section.classList.add("hidden");
-        step1Section.classList.remove("hidden");
-
-    } catch (err) {
-        console.error(err);
-        alert(`Erro ao finalizar pedido: ${err.message || err}`);
-    } finally {
-        isFinalizingOrder = false;
-        finalizeOrderButton.disabled = false;
-        finalizeOrderButton.classList.remove("opacity-60", "cursor-not-allowed");
-    }
-};
+            const orderData = {
+                clientId: clientId,
+                deliveryDate: deliveryDate,
+                comments: comments,
+                    include_nif: !!document.getElementById('nif-checkbox')?.checked,
+                discount: discount,
+                totalPrice: totalPrice,
+                services: selectedServices.map(s => ({
+                    id: s.id,
+                    quantity: s.quantity,
+                    description: s.description,
+                    preco: s.preco,
+                    nome: s.nome
+                }))
+            };
 
             try {
                 const response = await fetch(`${API_URL}/pedidos`, {
@@ -1325,9 +1168,13 @@ const finalizeOrder = async () => {
                 // ✅ agora imprimimos como FATURA e sem OT
                 const receiptData = {
                     pedido_id: result.pedido_id,
-                    documentType: (result && result.document_type === "FR") ? "Fatura" : "OT",
-                    documentNumber: (result && result.document_number) ? result.document_number : "",
-
+                    documentType: "Fatura",
+                    documentNumber: (() => {
+                        const year = new Date().getFullYear();
+                        const hasNif = !!document.getElementById("nif-checkbox")?.checked;
+                        const prefix = hasNif ? "FR" : "OT";
+                        return nextDocNumber(prefix, year);
+                    })(),
                     currentDate: currentDate,
                     deliveryDate: deliveryStr,
                     clientName: currentClient.name,
@@ -1536,9 +1383,10 @@ globalSearchBox?.addEventListener("click", (e) => {
             : "Requer endpoint /print no backend.";
 
 
-        // (removido) Não conectamos no QZ ao abrir a página. Conectamos somente ao imprimir.
+        window.addEventListener("load", async () => {
+            try { await conectarQZ(); } catch (e) { /* silencioso */ }
+        });
+});
 </script>
-    </main>
-  </div>
 </body>
 </html>
