@@ -628,7 +628,19 @@ out.push(STORE_INFO.email + "\n");
         }
 
         async function printWithQZ(receiptData) {
-            await conectarQZ();
+            // Na impressão (call=print), garantimos que a sessão está conectada *depois* de aplicar a segurança.
+            // Isso evita popup/"Invalid Signature" quando o QZ estava conectado em modo anônimo.
+            let securityOk = false;
+            try { securityOk = await tryEnableQZSecurity(); } catch (e) { securityOk = false; }
+
+            if (securityOk) {
+                try { if (qz.websocket.isActive()) await qz.websocket.disconnect(); } catch (e) {}
+                await qz.websocket.connect();
+            } else {
+                // fallback: modo atual (anônimo) sem quebrar o fluxo
+                await conectarQZ();
+            }
+
             const config = qz.configs.create(PRINTER_NAME);
 
             const viaCliente = buildReceiptEscPos(receiptData, "VIA CLIENTE");
