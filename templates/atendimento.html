@@ -655,23 +655,12 @@ out.push(STORE_INFO.email + "\n");
             await qz.print(config, payload);
         }
 
+
 async function printReceipt(receiptData) {
-            if (PRINT_MODE === "http") {
-                // Backend precisa expor POST /print que receba receiptData e imprima no servidor/local.
-                const resp = await fetch(`${API_URL}/print`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(receiptData)
-                });
-                if (!resp.ok) {
-                    const err = await resp.json().catch(() => ({}));
-                    throw new Error(err.error || "Falha ao imprimir via HTTP.");
-                }
-                return;
-            }
-            // padrão: QZ
+            // Impressão via QZ Tray (silenciosa). Se o QZ não estiver pronto/assinado,
+            // o QZ pode pedir autorização 1x (isso é do próprio QZ, não do site).
             await printWithQZ(receiptData);
-        }
+        }}
 
                 // ============================
         // APP (Atendimento)
@@ -713,6 +702,7 @@ async function printReceipt(receiptData) {
         let currentCategory = null; // categoria selecionada
 
 let selectedServices = [];
+let isFinalizingOrder = false;
         let currentServiceAction = null;
 
 
@@ -1218,35 +1208,107 @@ const closeServiceModal = () => {
             if (action === 'add') { addServiceToOrder(service, quantity, description); }
             closeServiceModal();
         };
+const finalizeOrder = async () => {
+    if (isFinalizingOrder) return;
 
-        const finalizeOrder = async () => {
-            const deliveryDate = document.getElementById('delivery-date').value;
-            const comments = document.getElementById('order-comments').value;
-            const discount = parseFloat(document.getElementById('discount-input').value) || 0;
+    isFinalizingOrder = true;
+    finalizeOrderButton.disabled = true;
+    finalizeOrderButton.classList.add("opacity-60", "cursor-not-allowed");
 
-            if (!deliveryDate) { alert('Por favor, selecione uma data de entrega prevista.'); return; }
+    try {
+        if (!selectedClient) {
+            alert("Selecione um cliente antes de finalizar.");
+            return;
+        }
+        if (!selectedServices || selectedServices.length === 0) {
+            alert("Selecione pelo menos um serviço antes de finalizar.");
+            return;
+        }
 
-            let subtotal = 0;
-            selectedServices.forEach(s => { subtotal += s.preco * s.quantity; });
-            const totalPrice = subtotal - discount;
+        const includeNif = nifCheckbox && nifCheckbox.checked;
+        const nifValue = includeNif ? (nifInput ? (nifInput.value || "").trim() : "") : "";
 
-            const clientId = currentClient.id_client || currentClient.id;
+        if (includeNif && !nifValue) {
+            alert("Marcou NIF, mas não informou o NIF. Preencha o NIF ou desmarque a opção.");
+            return;
+        }
 
-            const orderData = {
-                clientId: clientId,
-                deliveryDate: deliveryDate,
-                comments: comments,
-                    include_nif: !!document.getElementById('nif-checkbox')?.checked,
-                discount: discount,
-                totalPrice: totalPrice,
-                services: selectedServices.map(s => ({
-                    id: s.id,
-                    quantity: s.quantity,
-                    description: s.description,
-                    preco: s.preco,
-                    nome: s.nome
-                }))
-            };
+        const payload = {
+            id_cliente: selectedClient.id_cliente,
+            services: selectedServices.map(s => ({ id_service: s.id_service, qty: s.qty || 1 })),
+            notes: generalNotesInput ? (generalNotesInput.value || "") : "",
+            delivery_date: deliveryDateInput ? deliveryDateInput.value : "",
+            discount: discountInput ? (discountInput.value || "0") : "0",
+            include_nif: includeNif,
+            nif: nifValue
+        };
+
+        const response = await fetch("/pedidos", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            const txt = await response.text();
+            throw new Error(txt || "Erro ao criar pedido");
+        }
+
+        const result = await response.json();
+
+        // Monta dados do recibo com numeração controlada no backend
+        const receiptData = {
+            customerName: selectedClient.nome,
+            customerPhone: selectedClient.phone || "",
+            customerNif: includeNif ? nifValue : "",
+            includeNif: includeNif,
+            services: selectedServices.map(s => ({
+                name: s.service_name,
+                qty: s.qty || 1,
+                price: s.price,
+                total: (s.price || 0) * (s.qty || 1)
+            })),
+            notes: payload.notes,
+            deliveryDate: payload.delivery_date,
+            discount: parseFloat(payload.discount || "0") || 0,
+            total: parseFloat(totalValue.textContent.replace("€", "").trim()) || 0,
+            documentType: (result && result.document_type === "FR") ? "Fatura" : "OT",
+            documentNumber: (result && result.document_number) ? result.document_number : "",
+            currentDate: new Date().toLocaleDateString("pt-PT"),
+        };
+
+        // Imprime com QZ (silencioso). Se o QZ pedir trust, é 1x por site.
+        await printReceipt(receiptData);
+
+        // Reset UI
+        selectedServices = [];
+        selectedClient = null;
+        clientSearchInput.value = "";
+        clientResultContainer.innerHTML = "";
+        selectedClientName.textContent = "";
+        selectedClientPhone.textContent = "";
+        updateSelectedServicesUI();
+        if (generalNotesInput) generalNotesInput.value = "";
+        if (discountInput) discountInput.value = "0";
+        if (deliveryDateInput) deliveryDateInput.value = "";
+        if (nifCheckbox) nifCheckbox.checked = false;
+        if (nifInput) nifInput.value = "";
+        updateNifDisplay();
+
+        alert("Pedido finalizado com sucesso!");
+        orderSummarySection.classList.add("hidden");
+        step2Section.classList.add("hidden");
+        step1Section.classList.remove("hidden");
+
+    } catch (err) {
+        console.error(err);
+        alert(`Erro ao finalizar pedido: ${err.message || err}`);
+    } finally {
+        isFinalizingOrder = false;
+        finalizeOrderButton.disabled = false;
+        finalizeOrderButton.classList.remove("opacity-60", "cursor-not-allowed");
+    }
+};
 
             try {
                 const response = await fetch(`${API_URL}/pedidos`, {
@@ -1263,13 +1325,9 @@ const closeServiceModal = () => {
                 // ✅ agora imprimimos como FATURA e sem OT
                 const receiptData = {
                     pedido_id: result.pedido_id,
-                    documentType: "Fatura",
-                    documentNumber: (() => {
-                        const year = new Date().getFullYear();
-                        const hasNif = !!document.getElementById("nif-checkbox")?.checked;
-                        const prefix = hasNif ? "FR" : "OT";
-                        return nextDocNumber(prefix, year);
-                    })(),
+                    documentType: (result && result.document_type === "FR") ? "Fatura" : "OT",
+                    documentNumber: (result && result.document_number) ? result.document_number : "",
+
                     currentDate: currentDate,
                     deliveryDate: deliveryStr,
                     clientName: currentClient.name,
