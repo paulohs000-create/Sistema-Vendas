@@ -14,6 +14,7 @@ from flask import (
     request,
     session,
     url_for,
+    Response,
 )
 
 # -----------------------------------------------------------------------------
@@ -422,55 +423,6 @@ def db_test():
             cur.execute("SELECT 1 AS ok;")
             row = cur.fetchone()
     return jsonify({"db": "ok", "result": row}), 200
-
-
-# -----------------------------------------------------------------------------
-# QZ Tray signing (remove popup "Untrusted website")
-# -----------------------------------------------------------------------------
-@app.get("/qz/health")
-def qz_health():
-    """Diagnóstico simples para validar config no Railway."""
-    has_env_key = bool((os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip())
-    cert_path = os.path.join(app.static_folder or "static", "qz", "certificate.pem")
-    has_cert_file = os.path.exists(cert_path)
-    return jsonify({
-        "ok": True,
-        "has_private_key_env": has_env_key,
-        "has_certificate_file": has_cert_file,
-        "certificate_url": "/static/qz/certificate.pem",
-    }), 200
-
-
-@app.post("/qz/sign")
-def qz_sign():
-    """Assina o payload solicitado pelo QZ Tray e devolve base64 (texto puro)."""
-    data = request.get_data()  # bytes
-
-    private_key_pem = (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
-    if private_key_pem:
-        private_key_bytes = private_key_pem.encode("utf-8")
-    else:
-        # Fallback por arquivo (não recomendado em produção no Railway)
-        key_path = os.environ.get("QZ_PRIVATE_KEY_PATH", "private-key.pem")
-        if not os.path.exists(key_path):
-            return jsonify({"error": "Chave privada do QZ não encontrada (defina QZ_PRIVATE_KEY_PEM no Railway)."}), 500
-        with open(key_path, "rb") as f:
-            private_key_bytes = f.read()
-
-    try:
-        from OpenSSL import crypto
-    except Exception:
-        return jsonify({"error": "Dependência ausente: instale pyOpenSSL no requirements.txt"}), 500
-
-    try:
-        pkey = crypto.load_privatekey(crypto.FILETYPE_PEM, private_key_bytes)
-        signature = crypto.sign(pkey, data, "sha256")
-        signature_b64 = base64.b64encode(signature).decode("utf-8").strip()
-        return signature_b64, 200, {"Content-Type": "text/plain; charset=utf-8"}
-    except Exception as e:
-        print(f"[QZ] Falha ao assinar: {e}")
-        return jsonify({"error": "Falha ao assinar para o QZ."}), 500
-
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -1458,6 +1410,71 @@ def debug_env():
 # -----------------------------------------------------------------------------
 # Local run
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# QZ Tray (assinatura para remover popup "Untrusted website")
+# -----------------------------------------------------------------------------
+def _read_qz_certificate_pem() -> str:
+    # certificado público: static/qz/certificate.pem
+    cert_path = os.environ.get("QZ_CERT_PATH", os.path.join(app.static_folder or "static", "qz", "certificate.pem"))
+    if not os.path.exists(cert_path):
+        raise FileNotFoundError(f"certificate.pem não encontrado em: {cert_path}")
+    with open(cert_path, "r", encoding="utf-8", errors="ignore") as f:
+        # normaliza quebra de linha
+        return f.read().replace("\r\n", "\n").strip() + "\n"
+
+
+@app.get("/qz/certificate")
+def qz_certificate():
+    try:
+        pem = _read_qz_certificate_pem()
+        return Response(pem, mimetype="text/plain; charset=utf-8")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.get("/qz/health")
+def qz_health():
+    has_private_key = bool((os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip())
+    try:
+        _ = _read_qz_certificate_pem()
+        has_cert = True
+    except Exception:
+        has_cert = False
+    return jsonify(
+        {
+            "ok": True,
+            "certificate_url": "/static/qz/certificate.pem",
+            "has_certificate_file": has_cert,
+            "has_private_key_env": has_private_key,
+        }
+    )
+
+
+@app.post("/qz/sign")
+def qz_sign():
+    """Assina o payload solicitado pelo QZ Tray e devolve a assinatura em base64 (texto puro)."""
+    data = request.get_data() or b""
+
+    private_key_pem = (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
+    if not private_key_pem:
+        return jsonify({"error": "ENV QZ_PRIVATE_KEY_PEM não configurada."}), 500
+
+    try:
+        from OpenSSL import crypto  # requer pyOpenSSL
+    except Exception as e:
+        return jsonify({"error": "Dependência pyOpenSSL não instalada no servidor."}), 500
+
+    try:
+        pkey = crypto.load_privatekey(crypto.FILETYPE_PEM, private_key_pem.encode("utf-8"))
+        signature = crypto.sign(pkey, data, "sha256")
+        signature_b64 = base64.b64encode(signature).decode("utf-8").strip()
+        # Resposta precisa ser TEXTO (não JSON)
+        return Response(signature_b64, mimetype="text/plain; charset=utf-8")
+    except Exception as e:
+        print(f"[QZ] Falha ao assinar: {e}")
+        return jsonify({"error": "Falha ao assinar para o QZ."}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "7000"))
     app.run(host="0.0.0.0", port=port, debug=True)
