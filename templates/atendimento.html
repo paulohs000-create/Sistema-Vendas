@@ -425,8 +425,9 @@ async function tryEnableQZSecurity() {
             body: "probe"
         });
         if (!probe.ok) throw new Error("Falha no probe do /qz/sign");
-        const probeText = (await probe.text()).trim();
+        const probeText = String(await probe.text() || "").trim();
         if (probeText.length < 50) throw new Error("Assinatura muito curta (provável erro no /qz/sign)");
+        if (probeText.startsWith("{") || probeText.startsWith("<")) throw new Error("Resposta do /qz/sign parece HTML/JSON");
 
         qz.security.setSignaturePromise((toSign) => (resolve, reject) => {
             fetch(`${API_URL}/qz/sign`, {
@@ -435,7 +436,13 @@ async function tryEnableQZSecurity() {
                 body: toSign
             })
             .then(r => r.text())
-            .then(t => resolve(String(t).trim()))
+            .then(t => {
+                const sig = String(t || "").trim();
+                // evita assinar com resposta errada (HTML/JSON), o que gera "Invalid Signature"
+                if (!sig || sig.length < 40) throw new Error("Assinatura vazia/curta");
+                if (sig.startsWith("{") || sig.startsWith("<")) throw new Error("Assinatura inválida (parece HTML/JSON)");
+                resolve(sig);
+            })
             .catch(reject);
         });
 
