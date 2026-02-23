@@ -461,27 +461,31 @@ def qz_sign():
         alg = "sha256"
 
     try:
+        # pyOpenSSL removeu crypto.sign() em versões recentes.
+        # Por isso usamos 'cryptography' diretamente (mais estável).
         try:
-            from OpenSSL import crypto  # type: ignore
+            from cryptography.hazmat.primitives import hashes
+            from cryptography.hazmat.primitives.asymmetric import padding
+            from cryptography.hazmat.primitives.serialization import load_pem_private_key
         except ImportError:
-            raise RuntimeError("pyOpenSSL não instalado (adicione 'pyOpenSSL' no requirements.txt).")
+            raise RuntimeError("biblioteca 'cryptography' não instalada (adicione 'cryptography' no requirements.txt).")
 
-        pkey = crypto.load_privatekey(crypto.FILETYPE_PEM, private_key_bytes)
-        signature = crypto.sign(pkey, to_sign, alg)
+        private_key = load_pem_private_key(private_key_bytes, password=None)
+
+        digest = hashes.SHA256() if alg == "sha256" else hashes.SHA1()
+        signature = private_key.sign(
+            to_sign,
+            padding.PKCS1v15(),
+            digest,
+        )
+
         signature_b64 = base64.b64encode(signature).decode("utf-8").strip()
         return signature_b64, 200, {"Content-Type": "text/plain; charset=utf-8"}
 
     except Exception as e:
         print("[QZ/SIGN] ERRO:", repr(e))
-        try:
-            print(traceback.format_exc())
-        except Exception:
-            # se por algum motivo traceback não estiver importado, não quebra o handler
-            pass
-        return jsonify({"error": "Falha ao assinar para o QZ.", "detail": str(e)}), 500
-
-
-@app.route("/login", methods=["GET", "POST"])
+        print(traceback.format_exc())
+        return jsonify({"error": "Falha ao assinar para o QZ.", "detail": str(e)}), 500@app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "GET":
         next_url = request.args.get("next") or "/"
