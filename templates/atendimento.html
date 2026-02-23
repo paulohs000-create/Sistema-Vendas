@@ -1381,11 +1381,6 @@ globalSearchBox?.addEventListener("click", (e) => {
         if (hintEl) hintEl.textContent = (PRINT_MODE === "qz")
             ? "Requer QZ Tray aberto e site autorizado."
             : "Requer endpoint /print no backend.";
-
-
-        window.addEventListener("load", async () => {
-            try { await conectarQZ(); } catch (e) { /* silencioso */ }
-        });
 });
 </script>
 </body>
