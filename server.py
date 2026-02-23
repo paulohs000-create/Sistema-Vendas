@@ -1047,10 +1047,10 @@ def criar_pedido():
             pedido_id = cur.fetchone()["id_pedido"]
 
 
-# Gera numeração fiscal no backend (FR/OT) e salva vinculada ao pedido
-doc_info = allocate_document_number(cur, int(pedido_id), include_nif)
-document_number = doc_info["document_number"]
-document_type = doc_info["document_type"]
+            # Gera numeração fiscal no backend (FR/OT) e salva vinculada ao pedido
+            doc_info = allocate_document_number(cur, int(pedido_id), include_nif)
+            document_number = doc_info["document_number"]
+            document_type = doc_info["document_type"]
 
             for s in services:
                 service_id = s.get("id")
