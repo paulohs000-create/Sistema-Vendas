@@ -130,8 +130,8 @@ def login_required(roles: list[str] | None = None):
         @wraps(f)
         def wrapper(*args, **kwargs):
             if not session.get("user"):
-                return redirect("/login?next=" + request.path)
-if roles:
+                return redirect(url_for("login", next=request.path))
+            if roles:
                 if session.get("role") not in roles:
                     return jsonify({"error": "Acesso negado."}), 403
             return f(*args, **kwargs)
@@ -425,67 +425,7 @@ def db_test():
     return jsonify({"db": "ok", "result": row}), 200
 
 
-
-# -----------------------------------------------------------------------------
-# QZ Tray (Assinatura server-side para remover popup "Untrusted website")
-# -----------------------------------------------------------------------------
-@app.post("/qz/sign")
-def qz_sign():
-    """
-    Assina o payload solicitado pelo QZ Tray e devolve assinatura em base64 (texto).
-
-    Requer:
-      - ENV QZ_PRIVATE_KEY_PEM com a chave privada PEM (recomendado em produção)
-        OU
-      - arquivo local private-key.pem (NUNCA em /static)
-
-    Opcional:
-      - ENV QZ_SIGNATURE_ALG: "sha256" (padrão) ou "sha1" (para compatibilidade com algumas configs do QZ)
-    """
-    to_sign = request.get_data()  # bytes
-
-    private_key_pem = (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
-    if private_key_pem:
-        private_key_bytes = private_key_pem.encode("utf-8")
-    else:
-        key_path = os.environ.get("QZ_PRIVATE_KEY_PATH", "private-key.pem")
-        if not os.path.exists(key_path):
-            # Log claro no Railway
-            print("[QZ/SIGN] ERRO: chave privada não encontrada. Defina QZ_PRIVATE_KEY_PEM ou coloque private-key.pem no root.")
-            return jsonify({"error": "Chave privada do QZ não encontrada (QZ_PRIVATE_KEY_PEM ou private-key.pem)."}), 500
-        with open(key_path, "rb") as f:
-            private_key_bytes = f.read()
-
-    alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").strip().lower()
-    if alg not in ("sha256", "sha1"):
-        alg = "sha256"
-
-    try:
-        # pyOpenSSL removeu crypto.sign() em versões recentes.
-        # Por isso usamos 'cryptography' diretamente (mais estável).
-        try:
-            from cryptography.hazmat.primitives import hashes
-            from cryptography.hazmat.primitives.asymmetric import padding
-            from cryptography.hazmat.primitives.serialization import load_pem_private_key
-        except ImportError:
-            raise RuntimeError("biblioteca 'cryptography' não instalada (adicione 'cryptography' no requirements.txt).")
-
-        private_key = load_pem_private_key(private_key_bytes, password=None)
-
-        digest = hashes.SHA256() if alg == "sha256" else hashes.SHA1()
-        signature = private_key.sign(
-            to_sign,
-            padding.PKCS1v15(),
-            digest,
-        )
-
-        signature_b64 = base64.b64encode(signature).decode("utf-8").strip()
-        return signature_b64, 200, {"Content-Type": "text/plain; charset=utf-8"}
-
-    except Exception as e:
-        print("[QZ/SIGN] ERRO:", repr(e))
-        print(traceback.format_exc())
-        return jsonify({"error": "Falha ao assinar para o QZ.", "detail": str(e)}), 500@app.route("/login", methods=["GET", "POST"])
+@app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "GET":
         next_url = request.args.get("next") or "/"
@@ -1470,6 +1410,67 @@ def debug_env():
 # -----------------------------------------------------------------------------
 # Local run
 # -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# QZ Tray integration (assinatura para impressão via QZ)
+# -----------------------------------------------------------------------------
+@app.get("/qz/health")
+def qz_health():
+    """Healthcheck para depuração do QZ no Railway."""
+    cert_path = os.path.join(app.static_folder or "static", "qz", "certificate.pem")
+    return jsonify({
+        "ok": True,
+        "certificate_url": "/static/qz/certificate.pem",
+        "has_certificate_file": os.path.exists(cert_path),
+        "has_private_key_env": bool(os.environ.get("QZ_PRIVATE_KEY_PEM")),
+        "signature_alg": os.environ.get("QZ_SIGNATURE_ALG", "sha256"),
+    })
+
+
+@app.post("/qz/sign")
+def qz_sign():
+    """Assina o payload enviado pelo QZ (base64) usando a chave privada em ENV.
+
+    Requer: variável QZ_PRIVATE_KEY_PEM no Railway.
+    Dependência: cryptography (recomendado) no requirements.txt.
+    Algoritmo: QZ_SIGNATURE_ALG (sha256 padrão; pode usar sha1 se necessário).
+    """
+    try:
+        # payload bruto (bytes) do QZ / do browser
+        data = request.get_data() or b""
+
+        private_key_pem_str = (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
+        if not private_key_pem_str:
+            raise RuntimeError("QZ_PRIVATE_KEY_PEM vazio")
+
+        # Escolhe hash
+        alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip()
+
+        # cryptography (compatível com versões atuais)
+        try:
+            from cryptography.hazmat.primitives import hashes
+            from cryptography.hazmat.primitives.asymmetric import padding
+            from cryptography.hazmat.primitives.serialization import load_pem_private_key
+        except Exception as e:
+            raise RuntimeError("cryptography não instalado (adicione 'cryptography' no requirements.txt).") from e
+
+        key = load_pem_private_key(private_key_pem_str.encode("utf-8"), password=None)
+
+        if alg in ("sha1", "sha-1"):
+            digest = hashes.SHA1()
+        else:
+            # padrão
+            digest = hashes.SHA256()
+
+        signature = key.sign(data, padding.PKCS1v15(), digest)
+        signature_b64 = base64.b64encode(signature).decode("utf-8")
+        return signature_b64, 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+    except Exception as e:
+        print("[QZ/SIGN] ERROR:", repr(e))
+        print(traceback.format_exc())
+        return jsonify({"error": "qz_sign_failed", "detail": str(e)}), 500
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "7000"))
     app.run(host="0.0.0.0", port=port, debug=True)
