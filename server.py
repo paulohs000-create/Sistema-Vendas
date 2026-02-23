@@ -1,8 +1,9 @@
 import os
-import base64
-import traceback
 from datetime import date, datetime, timedelta
 from functools import wraps
+
+import base64
+import traceback
 
 import psycopg
 from psycopg.rows import dict_row
@@ -1045,6 +1046,12 @@ def criar_pedido():
             )
             pedido_id = cur.fetchone()["id_pedido"]
 
+
+# Gera numeração fiscal no backend (FR/OT) e salva vinculada ao pedido
+doc_info = allocate_document_number(cur, int(pedido_id), include_nif)
+document_number = doc_info["document_number"]
+document_type = doc_info["document_type"]
+
             for s in services:
                 service_id = s.get("id")
                 qty = int(s.get("quantity") or 1)
@@ -1059,7 +1066,7 @@ def criar_pedido():
 
         conn.commit()
 
-    return jsonify({"message": "Pedido criado com sucesso", "pedido_id": pedido_id}), 201
+    return jsonify({"message": "Pedido criado com sucesso", "pedido_id": pedido_id, "document_number": document_number, "document_type": document_type}), 201
 
 
 @app.get("/pedidos/stats")
@@ -1412,64 +1419,145 @@ def debug_env():
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
-# QZ Tray integration (assinatura para impressão via QZ)
+# QZ Tray helpers (assinatura) + numeração fiscal (FR/OT) no backend
 # -----------------------------------------------------------------------------
+
+def _ensure_qz_tables(cur) -> None:
+    # Tabela para sequências por tipo/ano
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS doc_sequences (
+            doc_type TEXT NOT NULL,
+            year INTEGER NOT NULL,
+            next_seq INTEGER NOT NULL,
+            PRIMARY KEY (doc_type, year)
+        )
+        '''
+    )
+    # Tabela para vincular pedido -> documento
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS pedido_documentos (
+            id_pedido INTEGER PRIMARY KEY,
+            doc_type TEXT NOT NULL,
+            year INTEGER NOT NULL,
+            seq INTEGER NOT NULL,
+            document_number TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        '''
+    )
+
+
+def allocate_document_number(cur, pedido_id: int, include_nif: bool) -> dict:
+    """Gera e persiste numeração FR/OT por ano, de forma transacional.
+
+    Regras:
+      - Sem NIF => OT AAAA/NN
+      - Com NIF => FR AAAA/NN
+    """
+    doc_type = "FR" if include_nif else "OT"
+    year = datetime.now().year
+
+    _ensure_qz_tables(cur)
+
+    # Se já existir (reimpressão), retorna a mesma numeração
+    cur.execute(
+        "SELECT document_number, doc_type FROM pedido_documentos WHERE id_pedido = %s",
+        (pedido_id,),
+    )
+    existing = cur.fetchone()
+    if existing:
+        return {"document_number": existing["document_number"], "document_type": existing["doc_type"]}
+
+    # Garante linha de sequência
+    cur.execute(
+        "INSERT INTO doc_sequences (doc_type, year, next_seq) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+        (doc_type, year, 1),
+    )
+
+    # Bloqueia linha para gerar sequência sem corrida
+    cur.execute(
+        "SELECT next_seq FROM doc_sequences WHERE doc_type = %s AND year = %s FOR UPDATE",
+        (doc_type, year),
+    )
+    row = cur.fetchone()
+    seq = int(row["next_seq"]) if row else 1
+
+    cur.execute(
+        "UPDATE doc_sequences SET next_seq = %s WHERE doc_type = %s AND year = %s",
+        (seq + 1, doc_type, year),
+    )
+
+    # Formato pedido: OT 2026/01 (2 dígitos, mas cresce automaticamente)
+    document_number = f"{doc_type} {year}/{seq:02d}"
+
+    cur.execute(
+        '''
+        INSERT INTO pedido_documentos (id_pedido, doc_type, year, seq, document_number)
+        VALUES (%s, %s, %s, %s, %s)
+        ''',
+        (pedido_id, doc_type, year, seq, document_number),
+    )
+
+    return {"document_number": document_number, "document_type": doc_type}
+
+
 @app.get("/qz/health")
 def qz_health():
-    """Healthcheck para depuração do QZ no Railway."""
+    # Endpoint simples para diagnosticar se os arquivos/ENV estão presentes
     cert_path = os.path.join(app.static_folder or "static", "qz", "certificate.pem")
-    return jsonify({
-        "ok": True,
-        "certificate_url": "/static/qz/certificate.pem",
-        "has_certificate_file": os.path.exists(cert_path),
-        "has_private_key_env": bool(os.environ.get("QZ_PRIVATE_KEY_PEM")),
-        "signature_alg": os.environ.get("QZ_SIGNATURE_ALG", "sha256"),
-    })
+    has_cert_file = os.path.exists(cert_path)
+    has_private_key_env = bool((os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip())
+    return jsonify(
+        {
+            "ok": True,
+            "certificate_url": "/static/qz/certificate.pem",
+            "has_certificate_file": has_cert_file,
+            "has_private_key_env": has_private_key_env,
+        }
+    )
 
 
 @app.post("/qz/sign")
 def qz_sign():
-    """Assina o payload enviado pelo QZ (base64) usando a chave privada em ENV.
+    """Retorna a assinatura (base64) do payload enviado pelo QZ Tray.
 
-    Requer: variável QZ_PRIVATE_KEY_PEM no Railway.
-    Dependência: cryptography (recomendado) no requirements.txt.
-    Algoritmo: QZ_SIGNATURE_ALG (sha256 padrão; pode usar sha1 se necessário).
+    Importante:
+    - NÃO proteger com login (senão o QZ recebe redirect/HTML e quebra a confiança).
+    - Assina com RSA + SHA-256 (padrão). Se precisar, defina QZ_SIGNATURE_ALG=sha1.
     """
     try:
-        # payload bruto (bytes) do QZ / do browser
         data = request.get_data() or b""
+        if not data:
+            return "missing data", 400
 
-        private_key_pem_str = (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
-        if not private_key_pem_str:
-            raise RuntimeError("QZ_PRIVATE_KEY_PEM vazio")
+        private_key_pem = (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
+        if not private_key_pem:
+            return "missing QZ_PRIVATE_KEY_PEM", 500
 
-        # Escolhe hash
+        # Carrega chave privada e assina
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        key = serialization.load_pem_private_key(
+            private_key_pem.encode("utf-8"),
+            password=None,
+        )
+
         alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip()
-
-        # cryptography (compatível com versões atuais)
-        try:
-            from cryptography.hazmat.primitives import hashes
-            from cryptography.hazmat.primitives.asymmetric import padding
-            from cryptography.hazmat.primitives.serialization import load_pem_private_key
-        except Exception as e:
-            raise RuntimeError("cryptography não instalado (adicione 'cryptography' no requirements.txt).") from e
-
-        key = load_pem_private_key(private_key_pem_str.encode("utf-8"), password=None)
-
-        if alg in ("sha1", "sha-1"):
-            digest = hashes.SHA1()
-        else:
-            # padrão
-            digest = hashes.SHA256()
+        digest = hashes.SHA1() if alg == "sha1" else hashes.SHA256()
 
         signature = key.sign(data, padding.PKCS1v15(), digest)
-        signature_b64 = base64.b64encode(signature).decode("utf-8")
+        signature_b64 = base64.b64encode(signature).decode("ascii")
         return signature_b64, 200, {"Content-Type": "text/plain; charset=utf-8"}
 
     except Exception as e:
         print("[QZ/SIGN] ERROR:", repr(e))
         print(traceback.format_exc())
-        return jsonify({"error": "qz_sign_failed", "detail": str(e)}), 500
+        return "error", 500
+
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "7000"))
