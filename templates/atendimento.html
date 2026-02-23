@@ -388,7 +388,8 @@ function nextDocNumber(prefix, year) {
 // Se algo estiver faltando, o sistema continua imprimindo no modo "anônimo" (com popup),
 // sem quebrar o fluxo.
 
-const API_URL = `${window.location.protocol}//${window.location.host}`;
+// API_URL já definido acima
+
 let QZ_SECURITY_ENABLED = false;
 
 async function waitForQZ(maxMs = 8000) {
@@ -409,10 +410,8 @@ async function tryEnableQZSecurity() {
         const certResp = await fetch(`${API_URL}/qz/certificate`, { cache: "no-store" });
         if (!certResp.ok) throw new Error("Falha ao carregar /qz/certificate");
         let certPem = await certResp.text();
-        certPem = certPem.replace(/
-/g, "
-").trim() + "
-";
+        certPem = certPem.replace(/\r\n/g, "\n").trim() + "\n";
+        
         if (!certPem.includes("BEGIN CERTIFICATE")) {
             throw new Error("certificate PEM inválido (não contém BEGIN CERTIFICATE)");
         }
@@ -467,7 +466,6 @@ async function conectarQZ() {
         await qz.websocket.connect();
     }
 }
-        }
 
         function line(char='-') {
             return (char.repeat(PAPER_WIDTH_CHARS)).slice(0, PAPER_WIDTH_CHARS) + "\n";
