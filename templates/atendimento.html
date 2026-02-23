@@ -384,6 +384,7 @@ function nextDocNumber(prefix, year) {
         // - Se certificado/assinatura não estiverem configurados no Railway ainda,
         //   continuamos imprimindo em modo "anônimo" (com popup), sem quebrar o fluxo.
         let QZ_SECURITY_READY = false;
+        let QZ_CONNECTED_WITH_SECURITY = false;
         let QZ_CERT_CACHE = null;
 
         async function waitForQZ(maxMs = 8000) {
@@ -462,15 +463,28 @@ function nextDocNumber(prefix, year) {
             // 1) tenta habilitar assinatura (remove popup) se backend/cert estiverem prontos
             // 2) se falhar, segue imprimindo em modo anônimo (com popup), como antes
             await waitForQZ();
+
+            let securityEnabledNow = false;
             try {
-                await tryEnableQZSecurity();
+                securityEnabledNow = await tryEnableQZSecurity();
             } catch (e) {
-                // silencioso
+                securityEnabledNow = false;
             }
 
-            if (!qz.websocket.isActive()) {
-                await qz.websocket.connect();
+            // Se já estava conectado ANTES (modo anônimo) e agora a assinatura ficou pronta,
+            // precisamos reconectar para o QZ passar a considerar o certificado/assinatura.
+            if (qz.websocket.isActive()) {
+                if (securityEnabledNow && !QZ_CONNECTED_WITH_SECURITY) {
+                    try { await qz.websocket.disconnect(); } catch (e) {}
+                } else {
+                    return; // já conectado no modo atual
+                }
             }
+
+            await qz.websocket.connect();
+
+            // Marca se conectou já com segurança habilitada
+            if (securityEnabledNow) QZ_CONNECTED_WITH_SECURITY = true;
         }
 
         function line(char='-') {
