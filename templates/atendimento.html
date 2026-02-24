@@ -364,7 +364,7 @@ function nextDocNumber(prefix, year) {
         // ============================
         // CONFIG IMPRESSÃO (QZ)
         // ============================
-        const PRINTER_NAME = "POS-80";   // nome exato no Windows
+        var PRINTER_NAME = "POS-80";   // nome exato no Windows
 
   // ---------------------------------------------------------------------------
   // QZ Tray - Segurança (certificate + signature) para evitar popups de "Untrusted"
@@ -390,14 +390,28 @@ function nextDocNumber(prefix, year) {
 
       // Assinatura: o QZ envia o texto a ser assinado e o backend devolve a assinatura em Base64
       qz.security.setSignaturePromise(function(toSign) {
-        return fetch(QZ_SIGN_URL, {
-          method: "POST",
-          headers: { "Content-Type": "text/plain" },
-          body: toSign
-        }).then(r => {
-          if (!r.ok) {
-            return r.text().then(t => { throw new Error("Falha em /qz/sign (" + r.status + "): " + t); });
-          }
+        // IMPORTANTE:
+        // O qz-tray.js espera que esta função retorne um "resolver" (function(resolve,reject)),
+        // não um Promise direto. Se retornar Promise aqui, ocorre:
+        // "Promise resolver #<Promise> is not a function"
+        return function(resolve, reject) {
+          fetch(QZ_SIGN_URL, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: toSign
+          })
+            .then(r => {
+              if (!r.ok) {
+                return r.text().then(t => { throw new Error("Falha em /qz/sign (" + r.status + "): " + t); });
+              }
+              return r.text();
+            })
+            .then(sig => resolve(sig))
+            .catch(err => reject(err));
+        };
+      });
+
+}
           return r.text();
         });
       });
