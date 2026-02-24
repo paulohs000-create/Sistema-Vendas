@@ -4,7 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sistema de Atendimento</title>
-    <script src="https://cdn.tailwindcss.com">        window.__APP_READY__ = true;
+    <script src="https://cdn.tailwindcss.com">        
+const PRINTER_NAME = "POS-80";
+window.__APP_READY__ = true;
 
     </script>
 
@@ -1139,7 +1141,7 @@ const closeServiceModal = () => {
                 clientId: clientId,
                 deliveryDate: deliveryDate,
                 comments: comments,
-                include_nif: !!document.getElementById('nif-checkbox')?.checked,
+                    include_nif: !!document.getElementById('nif-checkbox')?.checked,
                 discount: discount,
                 totalPrice: totalPrice,
                 services: selectedServices.map(s => ({
@@ -1165,9 +1167,9 @@ const closeServiceModal = () => {
 
                 // ✅ agora imprimimos como FATURA e sem OT
                 const receiptData = {
-                    pedido_id: result.pedido_id,
-                    documentType: (result.doc_type === "FR" ? "Fatura (FR)" : "Ordem de Trabalho (OT)"),
-                    documentNumber: (result.doc_number || result.docNumber || result.doc_number || ""),
+                    pedido_id: result.pedidoId,
+                    documentType: "Fatura",
+                    documentNumber: (result.docNumber || ""),
                     currentDate: currentDate,
                     deliveryDate: deliveryStr,
                     clientName: currentClient.name,
