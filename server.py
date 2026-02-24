@@ -562,6 +562,9 @@ def admin_stats():
     next7 = today + timedelta(days=7)
 
     with get_db_connection() as conn:
+        # Numeração fiscal (FR/OT) controlada no backend
+        doc_prefix, doc_seq, doc_number = _allocate_doc_number(conn, include_nif)
+
         with conn.cursor() as cur:
             # KPI: pendentes hoje (serviços)
             cur.execute(
@@ -1142,7 +1145,7 @@ def criar_pedido():
 
         conn.commit()
 
-    return jsonify({"message": "Pedido criado com sucesso", "pedido_id": pedido_id}), 201
+    return jsonify({"message": "Pedido criado com sucesso", "pedido_id": pedido_id, "doc_number": doc_number, "doc_prefix": doc_prefix, "doc_seq": doc_seq}), 201
 
 
 @app.get("/pedidos/stats")
