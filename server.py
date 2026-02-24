@@ -79,7 +79,7 @@ def qz_sign():
     # QZ envia texto puro para assinar
     payload = request.get_data(as_text=True) or ""
     try:
-        return (_qz_sign_payload(payload), 200, {"Content-Type": "text/plain; charset=utf-8"})
+        return (_qz_sign_payload(payload.encode("utf-8")), 200, {"Content-Type": "text/plain; charset=utf-8"})
     except Exception as e:
         # Retorna texto puro para facilitar debug no frontend
         return (f"ERROR: {e}", 500, {"Content-Type": "text/plain; charset=utf-8"})
