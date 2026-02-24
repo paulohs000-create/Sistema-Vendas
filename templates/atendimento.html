@@ -365,6 +365,47 @@ function nextDocNumber(prefix, year) {
         // CONFIG IMPRESSÃO (QZ)
         // ============================
         const PRINTER_NAME = "POS-80";   // nome exato no Windows
+
+  // ---------------------------------------------------------------------------
+  // QZ Tray - Segurança (certificate + signature) para evitar popups de "Untrusted"
+  // IMPORTANTE: isso precisa rodar ANTES de qualquer qz.websocket.connect()
+  // ---------------------------------------------------------------------------
+  const QZ_CERT_URL = "/static/qz/certificate.pem"; // servido pelo backend (Railway)
+  const QZ_SIGN_URL = "/qz/sign";                   // backend assina o payload
+
+  (function setupQZSecurity(){
+    try {
+      if (!window.qz || !qz.security) return;
+
+      // Certificado público usado pelo QZ para identificar este site
+      qz.security.setCertificatePromise(function(resolve, reject) {
+        fetch(QZ_CERT_URL, { cache: "no-store" })
+          .then(r => {
+            if (!r.ok) throw new Error("Falha ao carregar certificate.pem (" + r.status + ")");
+            return r.text();
+          })
+          .then(resolve)
+          .catch(reject);
+      });
+
+      // Assinatura: o QZ envia o texto a ser assinado e o backend devolve a assinatura em Base64
+      qz.security.setSignaturePromise(function(toSign) {
+        return fetch(QZ_SIGN_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: toSign
+        }).then(r => {
+          if (!r.ok) {
+            return r.text().then(t => { throw new Error("Falha em /qz/sign (" + r.status + "): " + t); });
+          }
+          return r.text();
+        });
+      });
+    } catch (e) {
+      console.warn("QZ security setup falhou:", e);
+    }
+  })();
+
         const VAT_RATE = 0.23;           // 23%
         const PAPER_WIDTH_CHARS = 42;    // 80mm costuma 42~48
 
@@ -379,50 +420,11 @@ function nextDocNumber(prefix, year) {
             phone: "925 442 437",
         };
 
-        
-// ------------------------------
-// QZ Tray (seguro e silencioso)
-// ------------------------------
-const PRINTER_NAME = "POS-80"; // nome EXATO da impressora no Windows
-const QZ_CERT_URL = "/static/qz/certificate.pem";
-const QZ_SIGN_URL = "/qz/sign";
-
-let __qz_security_ready = false;
-async function setupQZSecurity() {
-  if (__qz_security_ready) return;
-  // certificado do site (PEM) — deve bater com o que está no QZ Tray
-  qz.security.setCertificatePromise(() => fetch(QZ_CERT_URL, { cache: "no-store" }).then(r => {
-    if (!r.ok) throw new Error("Não foi possível carregar certificate.pem");
-    return r.text();
-  }));
-  // assinatura do QZ — backend assina o payload do QZ com a private key
-  qz.security.setSignaturePromise((toSign) => fetch(QZ_SIGN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/octet-stream" },
-    body: toSign
-  }).then(async r => {
-    const t = await r.text();
-    if (!r.ok) throw new Error(t || "Falha em /qz/sign");
-    return t;
-  }));
-  __qz_security_ready = true;
-}
-
-let __qz_connecting = null;
-let __printing = false;
-async function ensureQZConnection() {
-  await setupQZSecurity();
-  if (qz.websocket.isActive()) return;
-  if (!__qz_connecting) {
-    __qz_connecting = qz.websocket.connect().finally(() => { __qz_connecting = null;
-let __printing = false; });
-  }
-  await __qz_connecting;
-}
-
-async function conectarQZ() {
-  await ensureQZConnection();
-}
+        async function conectarQZ() {
+            if (!window.qz) throw new Error("QZ Tray não carregou.");
+            if (!qz.websocket.isActive()) {
+                await qz.websocket.connect();
+            }
         }
 
         function line(char='-') {
@@ -1420,7 +1422,11 @@ globalSearchBox?.addEventListener("click", (e) => {
             : "Requer endpoint /print no backend.";
 
 
-        </script>
+        window.addEventListener("load", async () => {
+            try { await conectarQZ(); } catch (e) { /* silencioso */ }
+        });
+
+    </script>
     </main>
   </div>
 </body>
