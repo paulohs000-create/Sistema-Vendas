@@ -4,7 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sistema de Atendimento</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com">        window.__APP_READY__ = true;
+
+    </script>
 
     <!-- QZ Tray -->
     <script src="https://cdn.jsdelivr.net/npm/qz-tray/qz-tray.js"></script>
@@ -262,12 +264,8 @@
         </div>
       </div>
 
-    
-    </main>
-  </div>
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-const API_URL = `${window.location.protocol}//${window.location.host}`;
+    <script>
+        const API_URL = `${window.location.protocol}//${window.location.host}`;
 
 
         
@@ -352,45 +350,6 @@ const RECEIPT_FOOTER_EXTRA = [
 // ============================
 // ⚠️ Idealmente isso deve ser no BACKEND para ser 100% consistente entre computadores.
 // Aqui fazemos um contador simples por navegador via localStorage.
-function nextDocNumber(prefix, year) {
-    const key = `docCounter_${prefix}_${year}`;
-    let n = 0;
-    try { n = parseInt(localStorage.getItem(key) || "0", 10) || 0; } catch (e) {}
-    n += 1;
-    try { localStorage.setItem(key, String(n)); } catch (e) {}
-    return `${prefix} ${year}/${String(n).padStart(2, "0")}`;
-}
-
-
-
-        // ============================
-        // CONFIG IMPRESSÃO (QZ)
-        // ============================
-        const PRINTER_NAME = "POS-80";   // nome exato no Windows
-        const VAT_RATE = 0.23;           // 23%
-        const PAPER_WIDTH_CHARS = 42;    // 80mm costuma 42~48
-
-        const STORE_INFO = {
-            title1: "Ponto e Linha - Arranjos",
-            title2: "e Costuras",
-            company: "Enseada Cosmica Unipessoal LDA",
-            address1: "Av Aristides de Sousa Mendes, 79 loja 5",
-            address2: "2785-741 S.D. Rana",
-            nif: "517725576",
-            email: "pontoelinhapt@gmail.com",
-            phone: "925 442 437",
-        };
-
-        async function conectarQZ() {
-            if (!window.qz) throw new Error("QZ Tray não carregou.");
-            if (!qz.websocket.isActive()) {
-                await qz.websocket.connect();
-            }
-        }
-
-        function line(char='-') {
-            return (char.repeat(PAPER_WIDTH_CHARS)).slice(0, PAPER_WIDTH_CHARS) + "\n";
-        }
 
         function twoCol(left, right) {
             const space = PAPER_WIDTH_CHARS - String(left).length - String(right).length;
@@ -560,23 +519,11 @@ out.push(STORE_INFO.email + "\n");
             await qz.print(config, payload);
         }
 
+
 async function printReceipt(receiptData) {
-            if (PRINT_MODE === "http") {
-                // Backend precisa expor POST /print que receba receiptData e imprima no servidor/local.
-                const resp = await fetch(`${API_URL}/print`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(receiptData)
-                });
-                if (!resp.ok) {
-                    const err = await resp.json().catch(() => ({}));
-                    throw new Error(err.error || "Falha ao imprimir via HTTP.");
-                }
-                return;
-            }
-            // padrão: QZ
-            await printWithQZ(receiptData);
-        }
+    // Somente QZ
+    await printWithQZ(receiptData);
+}
 
                 // ============================
         // APP (Atendimento)
@@ -1169,12 +1116,7 @@ const closeServiceModal = () => {
                 const receiptData = {
                     pedido_id: result.pedido_id,
                     documentType: "Fatura",
-                    documentNumber: (() => {
-                        const year = new Date().getFullYear();
-                        const hasNif = !!document.getElementById("nif-checkbox")?.checked;
-                        const prefix = hasNif ? "FR" : "OT";
-                        return nextDocNumber(prefix, year);
-                    })(),
+                    documentNumber: (result.doc_number || ""),
                     currentDate: currentDate,
                     deliveryDate: deliveryStr,
                     clientName: currentClient.name,
@@ -1381,7 +1323,14 @@ globalSearchBox?.addEventListener("click", (e) => {
         if (hintEl) hintEl.textContent = (PRINT_MODE === "qz")
             ? "Requer QZ Tray aberto e site autorizado."
             : "Requer endpoint /print no backend.";
-});
-</script>
+
+
+        window.addEventListener("load", async () => {
+            try { await conectarQZ(); } catch (e) { /* silencioso */ }
+        });
+
+    </script>
+    </main>
+  </div>
 </body>
 </html>
