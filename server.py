@@ -1,12 +1,12 @@
 import os
-import base64
-import traceback
 from datetime import date, datetime, timedelta
 from functools import wraps
 
 import psycopg
 from psycopg.rows import dict_row
 from flask import (
+import base64
+import traceback
     Flask,
     jsonify,
     redirect,
@@ -27,108 +27,77 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
 # -------------------------------------------------------------------------
 # Schema safety (migrações leves em runtime)
 # -------------------------------------------------------------------------
-def ensure_schema():
-    """Aplica ALTER TABLE leves e idempotentes.
-    Observação: para projetos maiores, prefira uma migração (Alembic).
+def def next_doc_number(doc_type: str, doc_year: int) -> tuple[int, str]:
+    """Gera o próximo número (seq, doc_number) para FR/OT por ano.
+
+    Usa SELECT ... FOR UPDATE para evitar duplicação em concorrência.
     """
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # Flag para relatórios: pedido com contribuinte (NIF) selecionado
-                cur.execute(
-                    """
-                    ALTER TABLE IF EXISTS pedidos
-                    ADD COLUMN IF NOT EXISTS include_nif boolean NOT NULL DEFAULT false
-                    """
-                )
-            conn.commit()
-    except Exception as e:
-        # Não derruba o app por falha de migração leve; loga apenas.
-        print(f"[SCHEMA] ensure_schema falhou: {e}")
+    if doc_type not in ("FR", "OT"):
+        raise ValueError("doc_type inválido")
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO doc_sequences (doc_type, doc_year, last_number)
+                VALUES (%s, %s, 0)
+                ON CONFLICT (doc_type, doc_year) DO NOTHING
+                """,
+                (doc_type, doc_year),
+            )
+            cur.execute(
+                "SELECT last_number FROM doc_sequences WHERE doc_type=%s AND doc_year=%s FOR UPDATE",
+                (doc_type, doc_year),
+            )
+            row = cur.fetchone()
+            last = int(row["last_number"]) if row and row.get("last_number") is not None else 0
+            seq = last + 1
+            cur.execute(
+                "UPDATE doc_sequences SET last_number=%s WHERE doc_type=%s AND doc_year=%s",
+                (seq, doc_type, doc_year),
+            )
+        conn.commit()
+    return seq, f"{doc_type} {doc_year}/{seq:02d}"
+
+ensure_schema():
+    """Ajustes de schema idempotentes (não quebram se já existir).
+
+    - include_nif em pedidos
+    - campos de numeração fiscal controlada no backend (FR/OT)
+    - tabela de sequências por ano (doc_sequences)
+    - (legado) include_nif em pedido_servicos (se existir)
+    """
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # pedidos: checkbox do contribuinte
+            cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS include_nif BOOLEAN DEFAULT FALSE;")
+
+            # pedidos: numeração fiscal no backend
+            cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS doc_type TEXT;")       # 'FR' ou 'OT'
+            cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS doc_year INTEGER;")
+            cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS doc_seq INTEGER;")
+            cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS doc_number TEXT;")    # ex: 'FR 2026/01'
+
+            # sequência por ano e tipo (FR/OT)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS doc_sequences (
+                    doc_type TEXT NOT NULL,
+                    doc_year INTEGER NOT NULL,
+                    last_number INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (doc_type, doc_year)
+                );
+            """)
+
+            # legado: se alguma versão antiga tinha include_nif em pedido_servicos
+            cur.execute("ALTER TABLE pedido_servicos ADD COLUMN IF NOT EXISTS include_nif BOOLEAN DEFAULT FALSE;")
+
+        conn.commit()
+
 
 
 
 # -----------------------------------------------------------------------------
 # Database
 # -----------------------------------------------------------------------------
-
-# -----------------------------------------------------------------------------
-# QZ Tray signing + Document numbering (FR/OT) helpers
-# -----------------------------------------------------------------------------
-
-def _qz_private_key_pem() -> str:
-    """Private key PEM used to sign QZ requests (set in Railway as env var QZ_PRIVATE_KEY_PEM)."""
-    return (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
-
-def _sign_bytes_sha256_rsa_pkcs1v15(payload: bytes) -> bytes:
-    """Returns raw signature bytes."""
-    try:
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding
-    except Exception as e:
-        raise RuntimeError("cryptography não instalado (adicione 'cryptography' no requirements.txt).") from e
-
-    key_pem = _qz_private_key_pem()
-    if not key_pem:
-        raise RuntimeError("QZ_PRIVATE_KEY_PEM vazio (defina no Railway).")
-
-    private_key = serialization.load_pem_private_key(
-        key_pem.encode("utf-8"),
-        password=None,
-    )
-    return private_key.sign(payload, padding.PKCS1v15(), hashes.SHA256())
-
-
-def _ensure_doc_schema(conn: psycopg.Connection) -> None:
-    """Cria tabela de sequências e colunas necessárias sem quebrar o que já existe."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS doc_sequences (
-              prefix TEXT NOT NULL,
-              year   INT  NOT NULL,
-              next_seq INT NOT NULL,
-              PRIMARY KEY(prefix, year)
-            );
-            """
-        )
-        # Colunas no pedidos (idempotente)
-        cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS doc_prefix TEXT;")
-        cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS doc_seq INT;")
-        cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS doc_number TEXT;")
-    conn.commit()
-
-
-def _allocate_doc_number(conn: psycopg.Connection, include_nif: bool) -> tuple[str, int, str]:
-    """Gera número fiscalmente controlado no backend:
-    - OT AAAA/01... quando não tem NIF
-    - FR AAAA/01... quando tem NIF
-    Retorna (prefix, seq, doc_number).
-    """
-    prefix = "FR" if include_nif else "OT"
-    year = datetime.now().year
-
-    with conn.cursor() as cur:
-        # lock row or create
-        cur.execute("SELECT next_seq FROM doc_sequences WHERE prefix=%s AND year=%s FOR UPDATE;", (prefix, year))
-        row = cur.fetchone()
-        if row is None:
-            seq = 1
-            cur.execute(
-                "INSERT INTO doc_sequences(prefix, year, next_seq) VALUES (%s,%s,%s);",
-                (prefix, year, 2),
-            )
-        else:
-            seq = int(row[0])
-            cur.execute(
-                "UPDATE doc_sequences SET next_seq = next_seq + 1 WHERE prefix=%s AND year=%s;",
-                (prefix, year),
-            )
-    conn.commit()
-
-    doc_number = f"{prefix} {year}/{seq:02d}"
-    return prefix, seq, doc_number
-
 def _get_database_url() -> str | None:
     # Railway normalmente injeta DATABASE_URL, mas vamos aceitar variações
     return (
@@ -497,11 +466,6 @@ def health():
 @handle_errors
 def db_test():
     with get_db_connection() as conn:
-        # Numeração fiscal (FR/OT) controlada no backend
-        doc_prefix = "FR" if include_nif else "OT"
-        doc_seq = date.today().year
-        doc_number = _allocate_doc_number(conn, doc_prefix, doc_seq)
-
         with conn.cursor() as cur:
             cur.execute("SELECT 1 AS ok;")
             row = cur.fetchone()
@@ -562,9 +526,6 @@ def admin_stats():
     next7 = today + timedelta(days=7)
 
     with get_db_connection() as conn:
-        # Numeração fiscal (FR/OT) controlada no backend
-        doc_prefix, doc_seq, doc_number = _allocate_doc_number(conn, include_nif)
-
         with conn.cursor() as cur:
             # KPI: pendentes hoje (serviços)
             cur.execute(
@@ -1099,35 +1060,49 @@ def delete_seamstress(seamstress_id):
 @login_required(["admin", "caixa"])
 @handle_errors
 def criar_pedido():
-    """
-    Espera o payload do atendimento.html:
-    {
-      clientId, deliveryDate, comments, discount, totalPrice,
-      services: [{id, quantity, description, preco, nome}]
-    }
-    """
     data = request.get_json(force=True) or {}
-
     client_id = data.get("clientId")
     delivery_date = data.get("deliveryDate")
-    comments = data.get("comments")
+    comments = data.get("comments", "")
     discount = float(data.get("discount") or 0)
-    total_price = float(data.get("totalPrice") or 0)
-    include_nif = bool(data.get("include_nif") or data.get("includeNif") or False)
+    include_nif = bool(data.get("include_nif"))
     services = data.get("services") or []
+
+    # total calculado no frontend (mantém o mesmo comportamento)
+    total_price = float(data.get("totalPrice") or 0)
 
     if not client_id or not delivery_date or not services:
         return jsonify({"error": "clientId, deliveryDate e services são obrigatórios."}), 400
+
+    # Numeração fiscal controlada no BACKEND:
+    # FR quando inclui contribuinte; OT quando não inclui.
+    doc_type = "FR" if include_nif else "OT"
+    doc_year = date.today().year
+    doc_seq, doc_number = next_doc_number(doc_type, doc_year)
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif, doc_prefix, doc_seq, doc_number)
-                VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif,
+                                    doc_type, doc_year, doc_seq, doc_number)
+                VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s)
                 RETURNING id_pedido
                 """,
-                (int(client_id), delivery_date, comments, discount, total_price, "Pendente", include_nif, doc_prefix, doc_seq, doc_number),
+                (
+                    int(client_id),
+                    delivery_date,
+                    comments,
+                    discount,
+                    total_price,
+                    "Pendente",
+                    include_nif,
+                    doc_type,
+                    doc_year,
+                    doc_seq,
+                    doc_number,
+                ),
             )
             pedido_id = cur.fetchone()["id_pedido"]
 
@@ -1145,7 +1120,17 @@ def criar_pedido():
 
         conn.commit()
 
-    return jsonify({"message": "Pedido criado com sucesso", "pedido_id": pedido_id, "doc_number": doc_number, "doc_prefix": doc_prefix, "doc_seq": doc_seq}), 201
+    return jsonify(
+        {
+            "message": "Pedido criado com sucesso",
+            "pedido_id": pedido_id,
+            "doc_type": doc_type,
+            "doc_year": doc_year,
+            "doc_seq": doc_seq,
+            "doc_number": doc_number,
+        }
+    ), 201
+
 
 
 @app.get("/pedidos/stats")
@@ -1496,38 +1481,47 @@ def debug_env():
 # -----------------------------------------------------------------------------
 # Local run
 # -----------------------------------------------------------------------------
-
-# -----------------------------------------------------------------------------
-# QZ Tray endpoints
-# -----------------------------------------------------------------------------
-@app.get("/qz/health")
-def qz_health():
-    """Endpoint simples para validar se o backend está pronto para assinar e se o certificate.pem existe."""
-    certificate_url = "/static/qz/certificate.pem"
-    cert_path = os.path.join(app.root_path, "static", "qz", "certificate.pem")
-    return jsonify(
-        ok=True,
-        certificate_url=certificate_url,
-        has_certificate_file=os.path.exists(cert_path),
-        has_private_key_env=bool(_qz_private_key_pem()),
-    )
-
-
-@app.post("/qz/sign")
-def qz_sign():
-    """Recebe bytes do QZ e devolve assinatura base64 (SHA256/RSA)."""
-    try:
-        payload = request.get_data() or b""
-        sig = _sign_bytes_sha256_rsa_pkcs1v15(payload)
-        sig_b64 = base64.b64encode(sig).decode("ascii")
-        # QZ espera texto puro
-        return sig_b64, 200, {"Content-Type": "text/plain; charset=utf-8"}
-    except Exception as e:
-        print("[QZ/SIGN] ERRO:", repr(e))
-        print(traceback.format_exc())
-        return "error", 500
-
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "7000"))
     app.run(host="0.0.0.0", port=port, debug=True)
+
+# -----------------------------------------------------------------------------
+# QZ Tray integration (certificate + backend signing)
+# -----------------------------------------------------------------------------
+def _qz_private_key_pem() -> str:
+    return (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
+
+def _qz_certificate_pem_path() -> str:
+    return os.path.join(app.root_path, "static", "qz", "certificate.pem")
+
+@app.get("/qz/health")
+def qz_health():
+    cert_path = _qz_certificate_pem_path()
+    return jsonify(
+        {
+            "certificate_url": "/static/qz/certificate.pem",
+            "has_certificate_file": os.path.exists(cert_path),
+            "has_private_key_env": bool(_qz_private_key_pem()),
+            "ok": os.path.exists(cert_path) and bool(_qz_private_key_pem()),
+        }
+    )
+
+@app.post("/qz/sign")
+def qz_sign():
+    try:
+        payload = request.get_data() or b""
+        pem = _qz_private_key_pem()
+        if not pem:
+            raise RuntimeError("QZ_PRIVATE_KEY_PEM vazio (configure no Railway).")
+
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        private_key = serialization.load_pem_private_key(pem.encode("utf-8"), password=None)
+        signature = private_key.sign(payload, padding.PKCS1v15(), hashes.SHA256())
+        signature_b64 = base64.b64encode(signature).decode("ascii")
+        return jsonify({"signature": signature_b64})
+    except Exception as e:
+        print("[QZ/SIGN] ERRO:", repr(e))
+        print(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
