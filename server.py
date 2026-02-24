@@ -1,6 +1,5 @@
 import os
 import base64
-import traceback
 from datetime import date, datetime, timedelta
 from functools import wraps
 
@@ -31,39 +30,37 @@ def _qz_private_key_pem() -> str | None:
     # chave PEM armazenada no Railway Variables
     return os.environ.get("QZ_PRIVATE_KEY_PEM") or os.environ.get("QZ_PRIVATE_KEY")
 
-def _qz_sign_payload(payload: str) -> str:
-    """Assina o payload (string) e devolve assinatura em Base64.
-
-    QZ Tray espera uma assinatura RSA (PKCS#1 v1.5) e o algoritmo
-    configurado no frontend (sha256 por padrão).
+def _qz_sign_payload(data: bytes) -> str:
     """
-    key_pem = (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
-    if not key_pem:
-        raise RuntimeError("QZ_PRIVATE_KEY_PEM vazio (configure a chave privada no Railway).")
+    Assina o payload do QZ Tray e devolve base64(signature).
 
-    # Algoritmo configurável (default sha256)
+    Importante:
+    - O QZ normalmente aceita SHA-256.
+    - Se precisar testar SHA-1, defina a env var: QZ_SIGNATURE_ALG=sha1
+    """
+    private_key_pem = (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
+    if not private_key_pem:
+        raise RuntimeError("QZ_PRIVATE_KEY_PEM vazio")
+
     alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip()
-    if alg not in ("sha256", "sha1"):
-        raise RuntimeError(f"QZ_SIGNATURE_ALG inválido: {alg}. Use sha256 ou sha1.")
 
-    try:
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding
-        from cryptography.hazmat.primitives.serialization import load_pem_private_key
-    except Exception as e:
-        raise RuntimeError("cryptography não instalado (adicione 'cryptography' no requirements.txt).") from e
+    # Usamos cryptography (backend do pyOpenSSL) porque crypto.sign pode não existir
+    # em versões novas do pyOpenSSL.
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
-    # Carrega chave privada
-    private_key = load_pem_private_key(key_pem.encode("utf-8"), password=None)
+    key = load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
 
-    digest = hashes.SHA256() if alg == "sha256" else hashes.SHA1()
+    if alg in ("sha1", "sha-1"):
+        h = hashes.SHA1()
+    elif alg in ("sha256", "sha-256"):
+        h = hashes.SHA256()
+    else:
+        raise RuntimeError(f"QZ_SIGNATURE_ALG inválido: {alg} (use sha256 ou sha1)")
 
-    sig = private_key.sign(
-        payload.encode("utf-8"),
-        padding.PKCS1v15(),
-        digest,
-    )
-    return base64.b64encode(sig).decode("utf-8").strip()
+    signature = key.sign(data, padding.PKCS1v15(), h)
+    return base64.b64encode(signature).decode("utf-8")
 
 @app.get("/qz/health")
 def qz_health():
