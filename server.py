@@ -497,6 +497,11 @@ def health():
 @handle_errors
 def db_test():
     with get_db_connection() as conn:
+        # Numeração fiscal (FR/OT) controlada no backend
+        doc_prefix = "FR" if include_nif else "OT"
+        doc_seq = date.today().year
+        doc_number = _allocate_doc_number(conn, doc_prefix, doc_seq)
+
         with conn.cursor() as cur:
             cur.execute("SELECT 1 AS ok;")
             row = cur.fetchone()
