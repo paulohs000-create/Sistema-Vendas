@@ -471,7 +471,9 @@ function nextDocNumber(prefix, year) {
         // ============================
         // CONFIG IMPRESSÃO (QZ)
         // ============================
-        const PRINTER_NAME = "POS-80";   // nome exato no Windows
+        window.APP_CONFIG = window.APP_CONFIG || {};
+  window.APP_CONFIG.PRINTER_NAME = window.APP_CONFIG.PRINTER_NAME || 'POS-80';
+  const PRINTER_NAME = window.APP_CONFIG.PRINTER_NAME;   // nome exato no Windows
         const VAT_RATE = 0.23;           // 23%
         const PAPER_WIDTH_CHARS = 42;    // 80mm costuma 42~48
 
