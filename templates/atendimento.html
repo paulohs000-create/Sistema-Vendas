@@ -4,9 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sistema de Atendimento</title>
-    <script src="https://cdn.tailwindcss.com">        
-const PRINTER_NAME = "POS-80";
-window.__APP_READY__ = true;
+    <script src="https://cdn.tailwindcss.com">        window.__APP_READY__ = true;
 
     </script>
 
@@ -366,7 +364,7 @@ function nextDocNumber(prefix, year) {
         // ============================
         // CONFIG IMPRESSÃO (QZ)
         // ============================
-        const PRINTER_NAME = "POS-80";   // nome exato no Windows
+        const PRINTER_NAME = PRINTER_NAME;   // nome exato no Windows
         const VAT_RATE = 0.23;           // 23%
         const PAPER_WIDTH_CHARS = 42;    // 80mm costuma 42~48
 
@@ -381,11 +379,50 @@ function nextDocNumber(prefix, year) {
             phone: "925 442 437",
         };
 
-        async function conectarQZ() {
-            if (!window.qz) throw new Error("QZ Tray não carregou.");
-            if (!qz.websocket.isActive()) {
-                await qz.websocket.connect();
-            }
+        
+// ------------------------------
+// QZ Tray (seguro e silencioso)
+// ------------------------------
+const PRINTER_NAME = PRINTER_NAME; // nome EXATO da impressora no Windows
+const QZ_CERT_URL = "/static/qz/certificate.pem";
+const QZ_SIGN_URL = "/qz/sign";
+
+let __qz_security_ready = false;
+async function setupQZSecurity() {
+  if (__qz_security_ready) return;
+  // certificado do site (PEM) — deve bater com o que está no QZ Tray
+  qz.security.setCertificatePromise(() => fetch(QZ_CERT_URL, { cache: "no-store" }).then(r => {
+    if (!r.ok) throw new Error("Não foi possível carregar certificate.pem");
+    return r.text();
+  }));
+  // assinatura do QZ — backend assina o payload do QZ com a private key
+  qz.security.setSignaturePromise((toSign) => fetch(QZ_SIGN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: toSign
+  }).then(async r => {
+    const t = await r.text();
+    if (!r.ok) throw new Error(t || "Falha em /qz/sign");
+    return t;
+  }));
+  __qz_security_ready = true;
+}
+
+let __qz_connecting = null;
+let __printing = false;
+async function ensureQZConnection() {
+  await setupQZSecurity();
+  if (qz.websocket.isActive()) return;
+  if (!__qz_connecting) {
+    __qz_connecting = qz.websocket.connect().finally(() => { __qz_connecting = null;
+let __printing = false; });
+  }
+  await __qz_connecting;
+}
+
+async function conectarQZ() {
+  await ensureQZConnection();
+}
         }
 
         function line(char='-') {
@@ -1167,9 +1204,14 @@ const closeServiceModal = () => {
 
                 // ✅ agora imprimimos como FATURA e sem OT
                 const receiptData = {
-                    pedido_id: result.pedidoId,
+                    pedido_id: result.pedido_id,
                     documentType: "Fatura",
-                    documentNumber: (result.docNumber || ""),
+                    documentNumber: (() => {
+                        const year = new Date().getFullYear();
+                        const hasNif = !!document.getElementById("nif-checkbox")?.checked;
+                        const prefix = hasNif ? "FR" : "OT";
+                        return nextDocNumber(prefix, year);
+                    })(),
                     currentDate: currentDate,
                     deliveryDate: deliveryStr,
                     clientName: currentClient.name,
@@ -1378,11 +1420,7 @@ globalSearchBox?.addEventListener("click", (e) => {
             : "Requer endpoint /print no backend.";
 
 
-        window.addEventListener("load", async () => {
-            try { await conectarQZ(); } catch (e) { /* silencioso */ }
-        });
-
-    </script>
+        </script>
     </main>
   </div>
 </body>
