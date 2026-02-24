@@ -9,8 +9,6 @@
     </script>
 
     <!-- QZ Tray -->
-    <script src="https://cdn.jsdelivr.net/npm/qz-tray/qz-tray.js"></script>
-
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; background-color: #f7f3f1; }
@@ -267,6 +265,115 @@
     <script>
         const API_URL = `${window.location.protocol}//${window.location.host}`;
 
+/* ------------------------------------------------------------
+   QZ Tray (carregamento sob demanda) - evita popup ao abrir a página
+------------------------------------------------------------ */
+async function _loadScriptOnce(src, id) {
+    return new Promise((resolve, reject) => {
+        if (id && document.getElementById(id)) return resolve();
+        const s = document.createElement('script');
+        if (id) s.id = id;
+        s.src = src;
+        s.async = true;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error('Falha ao carregar script: ' + src));
+        document.head.appendChild(s);
+    });
+}
+
+async function ensureQZReady() {
+    if (window.qz && window.qz.websocket) {
+        return window.qz;
+    }
+
+    // Use o arquivo local se existir no seu /static (recomendado), senão troque pelo CDN.
+    const localSrc = `${window.location.origin}/static/qz/qz-tray.js`;
+    try {
+        await _loadScriptOnce(localSrc, 'qz-tray-js');
+    } catch (e) {
+        // fallback CDN (ajuste se preferir outro)
+        await _loadScriptOnce('https://cdn.jsdelivr.net/npm/qz-tray@2.2.4/qz-tray.js', 'qz-tray-js');
+    }
+
+    if (!window.qz) throw new Error('QZ Tray JS não carregou');
+
+    // Promise type correto (evita: "Promise resolver #<Promise> is not a function")
+    qz.api.setPromiseType(function(resolver) { return new Promise(resolver); });
+
+    // Certificado e assinatura vindos do backend (Railway)
+    qz.security.setCertificatePromise(function() {
+        return fetch('/qz/certificate', { cache: 'no-store' }).then(r => {
+            if (!r.ok) throw new Error('Falha ao obter certificado');
+            return r.text();
+        });
+    });
+
+    qz.security.setSignaturePromise(function(toSign) {
+        return fetch('/qz/sign', {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            body: toSign
+        }).then(async (r) => {
+            const txt = await r.text();
+            if (!r.ok) throw new Error('Falha ao assinar: ' + txt);
+            return txt;
+        });
+    });
+
+    return window.qz;
+}
+
+async function connectQZIfNeeded() {
+    const qz = await ensureQZReady();
+    if (qz.websocket.isActive()) return qz;
+
+    // IMPORTANTE: não conectar no load da página => evita popup no início.
+    await qz.websocket.connect({ host: 'localhost', port: 8181, usingSecure: true });
+    return qz;
+}
+
+function buildReceiptText(data) {
+    const lines = [];
+    lines.push('==============================');
+    lines.push('        TALÃO / RECIBO         ');
+    lines.push('==============================');
+    lines.push(`Documento: ${data.doc_full || ''}`);
+    lines.push(`Cliente: ${data.client?.nome || data.client?.name || ''}`);
+    if (data.include_nif) lines.push(`NIF: ${data.client?.nif || ''}`);
+    lines.push(`Entrega: ${data.delivery_date || ''}`);
+    lines.push('------------------------------');
+    (data.services || []).forEach(s => {
+        const qty = Number(s.quantity || 1);
+        const name = (s.nome || s.name || '').toString();
+        const price = Number(s.preco || s.price || 0);
+        lines.push(`${qty}x ${name}`.slice(0, 30));
+        lines.push(`  ${price.toFixed(2)}€`.padStart(30));
+        if (s.description) lines.push(`  ${String(s.description).slice(0, 26)}`);
+    });
+    lines.push('------------------------------');
+    if (data.discount) lines.push(`Desconto: ${Number(data.discount).toFixed(2)}€`);
+    lines.push(`Total: ${Number(data.total || 0).toFixed(2)}€`);
+    if (data.comments) {
+        lines.push('------------------------------');
+        lines.push('Obs: ' + String(data.comments).slice(0, 28));
+    }
+    lines.push('\n\n');
+    return lines.join('\n');
+}
+
+async function printPedidoQZ(data) {
+    const qz = await connectQZIfNeeded();
+
+    const printer = (window.PRINTER_NAME || 'POS-80');
+    const config = qz.configs.create(printer, { copies: 1 });
+
+    const text = buildReceiptText(data);
+    const payload = [{ type: 'raw', format: 'plain', data: text }];
+
+    await qz.print(config, payload);
+}
+
+
 
         
         // Debug/robustness: mostra erro JS (se existir) e marca app pronta
@@ -364,62 +471,7 @@ function nextDocNumber(prefix, year) {
         // ============================
         // CONFIG IMPRESSÃO (QZ)
         // ============================
-        var PRINTER_NAME = "POS-80";   // nome exato no Windows
-
-  // ---------------------------------------------------------------------------
-  // QZ Tray - Segurança (certificate + signature) para evitar popups de "Untrusted"
-  // IMPORTANTE: isso precisa rodar ANTES de qualquer qz.websocket.connect()
-  // ---------------------------------------------------------------------------
-  const QZ_CERT_URL = "/static/qz/certificate.pem"; // servido pelo backend (Railway)
-  const QZ_SIGN_URL = "/qz/sign";                   // backend assina o payload
-
-  (function setupQZSecurity(){
-    try {
-      if (!window.qz || !qz.security) return;
-
-      // Certificado público usado pelo QZ para identificar este site
-      qz.security.setCertificatePromise(function(resolve, reject) {
-        fetch(QZ_CERT_URL, { cache: "no-store" })
-          .then(r => {
-            if (!r.ok) throw new Error("Falha ao carregar certificate.pem (" + r.status + ")");
-            return r.text();
-          })
-          .then(resolve)
-          .catch(reject);
-      });
-
-      // Assinatura: o QZ envia o texto a ser assinado e o backend devolve a assinatura em Base64
-      qz.security.setSignaturePromise(function(toSign) {
-        // IMPORTANTE:
-        // O qz-tray.js espera que esta função retorne um "resolver" (function(resolve,reject)),
-        // não um Promise direto. Se retornar Promise aqui, ocorre:
-        // "Promise resolver #<Promise> is not a function"
-        return function(resolve, reject) {
-          fetch(QZ_SIGN_URL, {
-            method: "POST",
-            headers: { "Content-Type": "text/plain" },
-            body: toSign
-          })
-            .then(r => {
-              if (!r.ok) {
-                return r.text().then(t => { throw new Error("Falha em /qz/sign (" + r.status + "): " + t); });
-              }
-              return r.text();
-            })
-            .then(sig => resolve(sig))
-            .catch(err => reject(err));
-        };
-      });
-
-}
-          return r.text();
-        });
-      });
-    } catch (e) {
-      console.warn("QZ security setup falhou:", e);
-    }
-  })();
-
+        const PRINTER_NAME = "POS-80";   // nome exato no Windows
         const VAT_RATE = 0.23;           // 23%
         const PAPER_WIDTH_CHARS = 42;    // 80mm costuma 42~48
 
@@ -1178,33 +1230,71 @@ const closeServiceModal = () => {
         };
 
         const finalizeOrder = async () => {
-            const deliveryDate = document.getElementById('delivery-date').value;
-            const comments = document.getElementById('order-comments').value;
-            const discount = parseFloat(document.getElementById('discount-input').value) || 0;
+    const deliveryDate = document.getElementById('delivery-date').value;
+    const comments = document.getElementById('order-comments').value;
+    const discount = parseFloat(document.getElementById('discount-input').value) || 0;
 
-            if (!deliveryDate) { alert('Por favor, selecione uma data de entrega prevista.'); return; }
+    if (!deliveryDate) { alert('Por favor, selecione uma data de entrega prevista.'); return; }
+    if (!currentClient) { alert('Selecione um cliente.'); return; }
+    if (!selectedServices || selectedServices.length === 0) { alert('Selecione ao menos 1 serviço.'); return; }
 
-            let subtotal = 0;
-            selectedServices.forEach(s => { subtotal += s.preco * s.quantity; });
-            const totalPrice = subtotal - discount;
+    // Total
+    let subtotal = 0;
+    selectedServices.forEach(s => { subtotal += (Number(s.preco || s.price || 0) * Number(s.quantity || 1)); });
+    const totalPrice = subtotal - discount;
 
-            const clientId = currentClient.id_client || currentClient.id;
+    const clientId = currentClient.id_client || currentClient.id;
+    const includeNif = !!document.getElementById('nif-checkbox')?.checked;
 
-            const orderData = {
-                clientId: clientId,
-                deliveryDate: deliveryDate,
-                comments: comments,
-                    include_nif: !!document.getElementById('nif-checkbox')?.checked,
-                discount: discount,
-                totalPrice: totalPrice,
-                services: selectedServices.map(s => ({
-                    id: s.id,
-                    quantity: s.quantity,
-                    description: s.description,
-                    preco: s.preco,
-                    nome: s.nome
-                }))
-            };
+    const orderData = {
+        client_id: clientId,
+        delivery_date: deliveryDate,
+        comments: comments,
+        include_nif: includeNif,
+        discount: discount,
+        services: selectedServices.map(s => ({
+            id: s.id,
+            quantity: Number(s.quantity || 1),
+            description: s.description || '',
+            price: Number(s.preco || s.price || 0),
+            name: s.nome || s.name || ''
+        }))
+    };
+
+    try {
+        const response = await fetch(`${API_URL}/pedidos`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(orderData)
+        });
+
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) {
+            throw new Error(result.error || 'Não foi possível criar o pedido.');
+        }
+
+        // Imprime via QZ (somente aqui, para não disparar popup ao carregar a página)
+        await printPedidoQZ({
+            doc_full: result.doc_full,
+            pedido_id: result.pedido_id,
+            client: currentClient,
+            services: selectedServices,
+            total: result.total ?? totalPrice,
+            discount: discount,
+            delivery_date: deliveryDate,
+            comments: comments,
+            include_nif: includeNif
+        });
+
+        alert(`Pedido criado: ${result.doc_full}`);
+        resetOrder();
+        showStep(1);
+
+    } catch (err) {
+        console.error(err);
+        alert(`Erro ao finalizar pedido: ${err.message || err}`);
+    }
+};
 
             try {
                 const response = await fetch(`${API_URL}/pedidos`, {
