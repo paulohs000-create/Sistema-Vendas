@@ -1,5 +1,6 @@
 import os
 import base64
+import traceback
 from datetime import date, datetime, timedelta
 from functools import wraps
 
@@ -22,30 +23,69 @@ from flask import (
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
 
-# -----------------------------------------------------------------------------
-# QZ Tray (certificate + signature)
-# -----------------------------------------------------------------------------
-def _qz_get_private_key_pem() -> str:
-    return (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
 
-def _qz_sign_bytes(data: bytes, alg: str = "sha256") -> str:
-    """Sign bytes for QZ Tray and return base64 signature.
-    Requires 'cryptography' in requirements.txt.
+# -----------------------------------------------------------------------------
+# QZ Tray (assinatura + health)
+# -----------------------------------------------------------------------------
+def _qz_private_key_pem() -> str | None:
+    # chave PEM armazenada no Railway Variables
+    return os.environ.get("QZ_PRIVATE_KEY_PEM") or os.environ.get("QZ_PRIVATE_KEY")
+
+def _qz_sign_payload(payload: str) -> str:
+    """Assina o payload (string) e devolve assinatura em Base64.
+
+    QZ Tray espera uma assinatura RSA (PKCS#1 v1.5) e o algoritmo
+    configurado no frontend (sha256 por padrão).
     """
-    private_key_pem = _qz_get_private_key_pem()
-    if not private_key_pem:
-        raise RuntimeError("QZ_PRIVATE_KEY_PEM vazio")
+    key_pem = (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
+    if not key_pem:
+        raise RuntimeError("QZ_PRIVATE_KEY_PEM vazio (configure a chave privada no Railway).")
+
+    # Algoritmo configurável (default sha256)
+    alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip()
+    if alg not in ("sha256", "sha1"):
+        raise RuntimeError(f"QZ_SIGNATURE_ALG inválido: {alg}. Use sha256 ou sha1.")
 
     try:
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import padding
-    except Exception as e:  # pragma: no cover
-        raise RuntimeError("Dependência 'cryptography' não instalada (adicione 'cryptography' no requirements.txt).") from e
+        from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    except Exception as e:
+        raise RuntimeError("cryptography não instalado (adicione 'cryptography' no requirements.txt).") from e
 
-    key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
-    h = hashes.SHA256() if (alg or "sha256").lower() == "sha256" else hashes.SHA1()
-    signature = key.sign(data, padding.PKCS1v15(), h)
-    return base64.b64encode(signature).decode("ascii")
+    # Carrega chave privada
+    private_key = load_pem_private_key(key_pem.encode("utf-8"), password=None)
+
+    digest = hashes.SHA256() if alg == "sha256" else hashes.SHA1()
+
+    sig = private_key.sign(
+        payload.encode("utf-8"),
+        padding.PKCS1v15(),
+        digest,
+    )
+    return base64.b64encode(sig).decode("utf-8").strip()
+
+@app.get("/qz/health")
+def qz_health():
+    # Verifica se o arquivo público existe no container
+    cert_path = os.path.join(app.root_path, "static", "qz", "certificate.pem")
+    return jsonify({
+        "ok": True,
+        "certificate_url": "/static/qz/certificate.pem",
+        "has_certificate_file": os.path.exists(cert_path),
+        "has_private_key_env": bool(_qz_private_key_pem()),
+        "signature_alg": (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip(),
+    })
+
+@app.post("/qz/sign")
+def qz_sign():
+    # QZ envia texto puro para assinar
+    payload = request.get_data(as_text=True) or ""
+    try:
+        return (_qz_sign_payload(payload), 200, {"Content-Type": "text/plain; charset=utf-8"})
+    except Exception as e:
+        # Retorna texto puro para facilitar debug no frontend
+        return (f"ERROR: {e}", 500, {"Content-Type": "text/plain; charset=utf-8"})
 
 
 # -------------------------------------------------------------------------
@@ -65,28 +105,6 @@ def ensure_schema():
                     ADD COLUMN IF NOT EXISTS include_nif boolean NOT NULL DEFAULT false
                     """
                 )
-
-                # Numeração fiscal/controlada no backend (FR/OT por ano)
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS doc_sequences (
-                        prefix text NOT NULL,
-                        year integer NOT NULL,
-                        last_seq integer NOT NULL DEFAULT 0,
-                        PRIMARY KEY (prefix, year)
-                    )
-                    """
-                )
-                cur.execute(
-                    """
-                    ALTER TABLE IF EXISTS pedidos
-                    ADD COLUMN IF NOT EXISTS doc_prefix text,
-                    ADD COLUMN IF NOT EXISTS doc_year integer,
-                    ADD COLUMN IF NOT EXISTS doc_seq integer,
-                    ADD COLUMN IF NOT EXISTS doc_number text
-                    """
-                )
-
             conn.commit()
     except Exception as e:
         # Não derruba o app por falha de migração leve; loga apenas.
@@ -135,39 +153,6 @@ def handle_errors(f):
 
 
 ensure_schema()
-
-
-# -----------------------------------------------------------------------------
-# QZ Tray endpoints
-# -----------------------------------------------------------------------------
-@app.get("/qz/health")
-def qz_health():
-    cert_path = os.path.join(app.static_folder or "static", "qz", "certificate.pem")
-    has_cert = os.path.exists(cert_path)
-    has_key = bool(_qz_get_private_key_pem())
-    return jsonify(
-        {
-            "certificate_url": "/static/qz/certificate.pem",
-            "has_certificate_file": has_cert,
-            "has_private_key_env": has_key,
-            "ok": bool(has_cert and has_key),
-        }
-    )
-
-@app.post("/qz/sign")
-def qz_sign():
-    try:
-        data = request.get_data()  # bytes
-        alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip()
-        sig_b64 = _qz_sign_bytes(data, alg=alg)
-        return sig_b64, 200, {"Content-Type": "text/plain; charset=utf-8"}
-    except Exception as e:
-        # Log completo no Railway
-        import traceback
-        print("[QZ/SIGN] ERRO:", repr(e))
-        print(traceback.format_exc())
-        return "error", 500
-
 
 
 # -----------------------------------------------------------------------------
@@ -1114,57 +1099,15 @@ def criar_pedido():
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-
-# ---- Numeração fiscal no backend (FR/OT) ----
-cur.execute("SELECT nif FROM clientes WHERE id_client = %s", (int(client_id),))
-_c = cur.fetchone()
-client_nif = (_c.get("nif") if _c else None) if isinstance(_c, dict) else (_c["nif"] if _c else None)
-prefix = "FR" if (include_nif and client_nif) else "OT"
-year = date.today().year
-
-cur.execute(
-    "SELECT last_seq FROM doc_sequences WHERE prefix=%s AND year=%s FOR UPDATE",
-    (prefix, year),
-)
-row = cur.fetchone()
-if not row:
-    cur.execute(
-        "INSERT INTO doc_sequences (prefix, year, last_seq) VALUES (%s, %s, 0) ON CONFLICT DO NOTHING",
-        (prefix, year),
-    )
-cur.execute(
-    "UPDATE doc_sequences SET last_seq = last_seq + 1 WHERE prefix=%s AND year=%s RETURNING last_seq",
-    (prefix, year),
-)
-seq = int(cur.fetchone()["last_seq"])
-doc_number = f"{prefix} {year}/{seq:02d}"
-
-cur.execute(
-    """
-    INSERT INTO pedidos (
-        id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif,
-        doc_prefix, doc_year, doc_seq, doc_number
-    )
-    VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-    RETURNING id_pedido, doc_number
-    """,
-    (
-        int(client_id),
-        delivery_date,
-        comments,
-        discount,
-        total_price,
-        "Pendente",
-        include_nif,
-        prefix,
-        year,
-        seq,
-        doc_number,
-    ),
-)
-row_p = cur.fetchone()
-pedido_id = row_p["id_pedido"]
-doc_number = row_p["doc_number"]
+            cur.execute(
+                """
+                INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif)
+                VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
+                RETURNING id_pedido
+                """,
+                (int(client_id), delivery_date, comments, discount, total_price, "Pendente", include_nif),
+            )
+            pedido_id = cur.fetchone()["id_pedido"]
 
             for s in services:
                 service_id = s.get("id")
