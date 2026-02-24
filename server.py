@@ -110,6 +110,32 @@ def get_db_connection():
     return psycopg.connect(db_url, row_factory=dict_row)
 
 
+
+
+# -----------------------------------------------------------------------------
+# Schema / migrations (leve)
+# -----------------------------------------------------------------------------
+def ensure_schema():
+    """Aplica ALTER TABLE leves e idempotentes.
+    Observação: para projetos maiores, prefira uma migração (Alembic).
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Flag para relatórios: pedido com contribuinte (NIF) selecionado
+                cur.execute(
+                    """
+                    ALTER TABLE IF EXISTS pedidos
+                    ADD COLUMN IF NOT EXISTS include_nif boolean NOT NULL DEFAULT false
+                    """
+                )
+            conn.commit()
+    except Exception as e:
+        # Não derruba o app por falha de migração leve; loga apenas.
+        print(f"[SCHEMA] ensure_schema falhou: {e}")
+
+# Executa migração leve no boot (idempotente)
+ensure_schema()
 def handle_errors(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -123,11 +149,6 @@ def handle_errors(f):
             return jsonify({"error": str(e)}), 500
 
     return wrapper
-
-
-ensure_schema()
-
-
 # -----------------------------------------------------------------------------
 # Auth
 # -----------------------------------------------------------------------------
