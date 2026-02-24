@@ -1298,64 +1298,6 @@ const closeServiceModal = () => {
     }
 };
 
-            try {
-                const response = await fetch(`${API_URL}/pedidos`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(orderData)
-                });
-                const result = await response.json();
-                if (!response.ok) throw new Error(result.error || 'Não foi possível criar o pedido.');
-
-                const now = new Date();
-                const currentDate = now.toLocaleString('pt-PT').replace(',', '');
-                const deliveryStr = new Date(orderData.deliveryDate + 'T00:00:00').toLocaleDateString('pt-PT');
-
-                // ✅ agora imprimimos como FATURA e sem OT
-                const receiptData = {
-                    pedido_id: result.pedido_id,
-                    documentType: "Fatura",
-                    documentNumber: (() => {
-                        const year = new Date().getFullYear();
-                        const hasNif = !!document.getElementById("nif-checkbox")?.checked;
-                        const prefix = hasNif ? "FR" : "OT";
-                        return nextDocNumber(prefix, year);
-                    })(),
-                    currentDate: currentDate,
-                    deliveryDate: deliveryStr,
-                    clientName: currentClient.name,
-                    clientNif: currentClient.nif,
-                    includeNif: !!document.getElementById("nif-checkbox")?.checked,
-                    nif: (document.getElementById("nif-checkbox")?.checked && currentClient && currentClient.nif) ? String(currentClient.nif).trim() : "",
-                    clientAddressOrNotes: comments,
-                    notes: comments,
-                    subtotal: subtotal,
-                    discount: discount,
-                    totalPrice: totalPrice,
-                    services: selectedServices.map(s => ({
-                        quantity: s.quantity,
-                        name: s.nome,
-                        description: s.description,
-                        unitPrice: s.preco,
-                        itemTotal: (s.preco * s.quantity)
-                    }))
-                };
-
-                await printReceipt(receiptData);
-window.location.reload();
-
-            } catch (error) {
-                console.error(error);
-                alert(
-                    `Erro: ${error.message}\n\n` +
-                    `Confirme:\n` +
-                    `- QZ Tray está aberto\n` +
-                    `- A impressora "${PRINTER_NAME}" existe no Windows\n` +
-                    `- Você autorizou o site no QZ (Allow/Trusted)\n`
-                );
-            }
-        };
-
-        
         // Sidebar toggle (tablet)
         document.getElementById("sidebar-toggle")?.addEventListener("click", () => openSidebar());
         document.getElementById("sidebar-overlay")?.addEventListener("click", () => closeSidebar());
