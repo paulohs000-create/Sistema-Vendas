@@ -1,4 +1,5 @@
 import os
+import base64
 from datetime import date, datetime, timedelta
 from functools import wraps
 
@@ -22,104 +23,29 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
 
 # -----------------------------------------------------------------------------
-# QZ Tray (signature + certificate) + Numeração FR/OT no backend
+# QZ Tray (certificate + signature)
 # -----------------------------------------------------------------------------
-from datetime import datetime as _dt
+def _qz_get_private_key_pem() -> str:
+    return (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
 
-def _ensure_doc_tables(conn):
-    """Cria tabelas auxiliares para numeração de documentos (FR/OT) se não existirem."""
-    with conn.cursor() as cur:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS doc_counters (
-                year INT NOT NULL,
-                prefix TEXT NOT NULL,
-                last_number INT NOT NULL DEFAULT 0,
-                PRIMARY KEY (year, prefix)
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS pedido_documentos (
-                pedido_id INT PRIMARY KEY,
-                year INT NOT NULL,
-                prefix TEXT NOT NULL,
-                number INT NOT NULL,
-                doc_number TEXT NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT NOW()
-            )
-        """)
-    conn.commit()
-
-def _next_doc_number(conn, prefix: str) -> tuple[int, str, int]:
-    """Retorna (year, doc_number_str, seq_int). Usa lock transacional para ser seguro."""
-    year = _dt.utcnow().year
-    prefix = (prefix or "OT").upper()
-
-    with conn.cursor() as cur:
-        cur.execute("""
-            INSERT INTO doc_counters (year, prefix, last_number)
-            VALUES (%s, %s, 0)
-            ON CONFLICT (year, prefix) DO NOTHING
-        """, (year, prefix))
-
-        cur.execute("""
-            SELECT last_number
-            FROM doc_counters
-            WHERE year = %s AND prefix = %s
-            FOR UPDATE
-        """, (year, prefix))
-        row = cur.fetchone()
-        last_num = int(row[0]) if row else 0
-        next_num = last_num + 1
-
-        cur.execute("""
-            UPDATE doc_counters
-            SET last_number = %s
-            WHERE year = %s AND prefix = %s
-        """, (next_num, year, prefix))
-
-    doc_number = f"{prefix} {year}/{next_num:02d}"
-    return year, doc_number, next_num
-
-def _qz_sign_bytes(data: bytes) -> str:
-    private_key_pem = (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
+def _qz_sign_bytes(data: bytes, alg: str = "sha256") -> str:
+    """Sign bytes for QZ Tray and return base64 signature.
+    Requires 'cryptography' in requirements.txt.
+    """
+    private_key_pem = _qz_get_private_key_pem()
     if not private_key_pem:
-        raise RuntimeError("QZ_PRIVATE_KEY_PEM vazio (configure no Railway).")
+        raise RuntimeError("QZ_PRIVATE_KEY_PEM vazio")
 
-    alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").strip().lower()
     try:
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import padding
-    except Exception as e:
-        raise RuntimeError("Dependência 'cryptography' não instalada.") from e
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError("Dependência 'cryptography' não instalada (adicione 'cryptography' no requirements.txt).") from e
 
-    h = hashes.SHA512() if alg == "sha512" else hashes.SHA256()
     key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
+    h = hashes.SHA256() if (alg or "sha256").lower() == "sha256" else hashes.SHA1()
     signature = key.sign(data, padding.PKCS1v15(), h)
     return base64.b64encode(signature).decode("ascii")
-
-@app.get("/qz/health")
-def qz_health():
-    cert_path = os.path.join(app.static_folder or "static", "qz", "certificate.pem")
-    has_cert = os.path.exists(cert_path)
-    has_key_env = bool((os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip())
-    return jsonify({
-        "certificate_url": "/static/qz/certificate.pem",
-        "has_certificate_file": has_cert,
-        "has_private_key_env": has_key_env,
-        "ok": has_cert and has_key_env,
-    })
-
-@app.post("/qz/sign")
-def qz_sign():
-    try:
-        data = request.get_data() or b""
-        sig_b64 = _qz_sign_bytes(data)
-        return sig_b64, 200, {"Content-Type": "text/plain; charset=utf-8"}
-    except Exception as e:
-        import traceback
-        print("[QZ/SIGN] ERROR:", repr(e))
-        print(traceback.format_exc())
-        return "error", 500
 
 
 # -------------------------------------------------------------------------
@@ -139,6 +65,28 @@ def ensure_schema():
                     ADD COLUMN IF NOT EXISTS include_nif boolean NOT NULL DEFAULT false
                     """
                 )
+
+                # Numeração fiscal/controlada no backend (FR/OT por ano)
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS doc_sequences (
+                        prefix text NOT NULL,
+                        year integer NOT NULL,
+                        last_seq integer NOT NULL DEFAULT 0,
+                        PRIMARY KEY (prefix, year)
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE IF EXISTS pedidos
+                    ADD COLUMN IF NOT EXISTS doc_prefix text,
+                    ADD COLUMN IF NOT EXISTS doc_year integer,
+                    ADD COLUMN IF NOT EXISTS doc_seq integer,
+                    ADD COLUMN IF NOT EXISTS doc_number text
+                    """
+                )
+
             conn.commit()
     except Exception as e:
         # Não derruba o app por falha de migração leve; loga apenas.
@@ -187,6 +135,39 @@ def handle_errors(f):
 
 
 ensure_schema()
+
+
+# -----------------------------------------------------------------------------
+# QZ Tray endpoints
+# -----------------------------------------------------------------------------
+@app.get("/qz/health")
+def qz_health():
+    cert_path = os.path.join(app.static_folder or "static", "qz", "certificate.pem")
+    has_cert = os.path.exists(cert_path)
+    has_key = bool(_qz_get_private_key_pem())
+    return jsonify(
+        {
+            "certificate_url": "/static/qz/certificate.pem",
+            "has_certificate_file": has_cert,
+            "has_private_key_env": has_key,
+            "ok": bool(has_cert and has_key),
+        }
+    )
+
+@app.post("/qz/sign")
+def qz_sign():
+    try:
+        data = request.get_data()  # bytes
+        alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip()
+        sig_b64 = _qz_sign_bytes(data, alg=alg)
+        return sig_b64, 200, {"Content-Type": "text/plain; charset=utf-8"}
+    except Exception as e:
+        # Log completo no Railway
+        import traceback
+        print("[QZ/SIGN] ERRO:", repr(e))
+        print(traceback.format_exc())
+        return "error", 500
+
 
 
 # -----------------------------------------------------------------------------
@@ -1132,17 +1113,58 @@ def criar_pedido():
         return jsonify({"error": "clientId, deliveryDate e services são obrigatórios."}), 400
 
     with get_db_connection() as conn:
-        _ensure_doc_tables(conn)
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif)
-                VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
-                RETURNING id_pedido
-                """,
-                (int(client_id), delivery_date, comments, discount, total_price, "Pendente", include_nif),
-            )
-            pedido_id = cur.fetchone()["id_pedido"]
+
+# ---- Numeração fiscal no backend (FR/OT) ----
+cur.execute("SELECT nif FROM clientes WHERE id_client = %s", (int(client_id),))
+_c = cur.fetchone()
+client_nif = (_c.get("nif") if _c else None) if isinstance(_c, dict) else (_c["nif"] if _c else None)
+prefix = "FR" if (include_nif and client_nif) else "OT"
+year = date.today().year
+
+cur.execute(
+    "SELECT last_seq FROM doc_sequences WHERE prefix=%s AND year=%s FOR UPDATE",
+    (prefix, year),
+)
+row = cur.fetchone()
+if not row:
+    cur.execute(
+        "INSERT INTO doc_sequences (prefix, year, last_seq) VALUES (%s, %s, 0) ON CONFLICT DO NOTHING",
+        (prefix, year),
+    )
+cur.execute(
+    "UPDATE doc_sequences SET last_seq = last_seq + 1 WHERE prefix=%s AND year=%s RETURNING last_seq",
+    (prefix, year),
+)
+seq = int(cur.fetchone()["last_seq"])
+doc_number = f"{prefix} {year}/{seq:02d}"
+
+cur.execute(
+    """
+    INSERT INTO pedidos (
+        id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif,
+        doc_prefix, doc_year, doc_seq, doc_number
+    )
+    VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    RETURNING id_pedido, doc_number
+    """,
+    (
+        int(client_id),
+        delivery_date,
+        comments,
+        discount,
+        total_price,
+        "Pendente",
+        include_nif,
+        prefix,
+        year,
+        seq,
+        doc_number,
+    ),
+)
+row_p = cur.fetchone()
+pedido_id = row_p["id_pedido"]
+doc_number = row_p["doc_number"]
 
             for s in services:
                 service_id = s.get("id")
