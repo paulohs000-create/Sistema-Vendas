@@ -1,8 +1,8 @@
 import os
-from datetime import date, datetime, timedelta
-from functools import wraps
 import base64
 import traceback
+from datetime import date, datetime, timedelta
+from functools import wraps
 
 import psycopg
 from psycopg.rows import dict_row
@@ -22,127 +22,6 @@ from flask import (
 # -----------------------------------------------------------------------------
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
-
-# -----------------------------------------------------------------------------
-# QZ + Document numbering (OT/FR) - backend controlled
-# -----------------------------------------------------------------------------
-_SCHEMA_READY = False
-
-def _ensure_schema() -> None:
-    """Ensure minimal schema objects exist (idempotent)."""
-    global _SCHEMA_READY
-    if _SCHEMA_READY:
-        return
-    db_url = _get_database_url()
-    if not db_url:
-        # Without DB we can't create sequences; keep app running.
-        _SCHEMA_READY = True
-        return
-    try:
-        with psycopg.connect(db_url) as conn:
-            with conn.cursor() as cur:
-                # sequence table for document numbering
-                cur.execute(
-                    """CREATE TABLE IF NOT EXISTS doc_sequences (
-                        year INT NOT NULL,
-                        doc_type TEXT NOT NULL,
-                        next_seq INT NOT NULL,
-                        PRIMARY KEY (year, doc_type)
-                    )"""
-                )
-                # columns on pedidos to store doc identity
-                cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS doc_number TEXT")
-                cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS doc_type TEXT")
-                cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS doc_seq INT")
-            conn.commit()
-    except Exception:
-        # Don't crash app on schema issues; we will surface errors at /pedidos creation.
-        pass
-    _SCHEMA_READY = True
-
-
-def _next_doc_number(conn, include_nif: bool) -> tuple[str, str, int]:
-    """Return (doc_number, doc_type, seq) using a DB transaction & row lock."""
-    year = datetime.utcnow().year
-    doc_type = "FR" if include_nif else "OT"
-    with conn.cursor() as cur:
-        cur.execute(
-            """INSERT INTO doc_sequences(year, doc_type, next_seq)
-                 VALUES (%s, %s, 1)
-                 ON CONFLICT (year, doc_type) DO NOTHING""",
-            (year, doc_type),
-        )
-        cur.execute(
-            """SELECT next_seq FROM doc_sequences
-                 WHERE year=%s AND doc_type=%s
-                 FOR UPDATE""",
-            (year, doc_type),
-        )
-        row = cur.fetchone()
-        if not row:
-            raise RuntimeError("Falha ao obter sequencia de documento.")
-        seq = int(row[0])
-        cur.execute(
-            """UPDATE doc_sequences
-                 SET next_seq = next_seq + 1
-                 WHERE year=%s AND doc_type=%s""",
-            (year, doc_type),
-        )
-    doc_number = f"{doc_type} {year}/{seq:02d}"
-    return doc_number, doc_type, seq
-
-
-@app.before_request
-def _schema_bootstrap():
-    # one-time schema check
-    _ensure_schema()
-
-
-def _qz_private_key_pem() -> str:
-    return (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
-
-
-@app.get("/qz/health")
-def qz_health():
-    cert_path = os.path.join(app.static_folder or "static", "qz", "certificate.pem")
-    return jsonify(
-        {
-            "ok": True,
-            "certificate_url": "/static/qz/certificate.pem",
-            "has_certificate_file": os.path.exists(cert_path),
-            "has_private_key_env": bool(_qz_private_key_pem()),
-        }
-    )
-
-
-@app.post("/qz/sign")
-def qz_sign():
-    """Sign raw data for QZ Tray using RSA + SHA256.
-
-    QZ Tray expects the response body to be a Base64 string (no JSON).
-    """
-    try:
-        data: bytes = request.get_data(cache=False) or b""
-        if not data:
-            return "empty", 400
-
-        private_key_pem = _qz_private_key_pem()
-        if not private_key_pem:
-            raise RuntimeError("QZ_PRIVATE_KEY_PEM vazio (defina no Railway).")
-
-        # Lazy import to keep startup light.
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding
-
-        key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
-        signature = key.sign(data, padding.PKCS1v15(), hashes.SHA256())
-        return base64.b64encode(signature).decode("ascii")
-
-    except Exception as e:
-        print("[QZ/SIGN] ERRO:", repr(e))
-        print(traceback.format_exc())
-        return "error", 500
-
 
 
 # -------------------------------------------------------------------------
@@ -172,6 +51,84 @@ def ensure_schema():
 # -----------------------------------------------------------------------------
 # Database
 # -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# QZ Tray signing + Document numbering (FR/OT) helpers
+# -----------------------------------------------------------------------------
+
+def _qz_private_key_pem() -> str:
+    """Private key PEM used to sign QZ requests (set in Railway as env var QZ_PRIVATE_KEY_PEM)."""
+    return (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
+
+def _sign_bytes_sha256_rsa_pkcs1v15(payload: bytes) -> bytes:
+    """Returns raw signature bytes."""
+    try:
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+    except Exception as e:
+        raise RuntimeError("cryptography não instalado (adicione 'cryptography' no requirements.txt).") from e
+
+    key_pem = _qz_private_key_pem()
+    if not key_pem:
+        raise RuntimeError("QZ_PRIVATE_KEY_PEM vazio (defina no Railway).")
+
+    private_key = serialization.load_pem_private_key(
+        key_pem.encode("utf-8"),
+        password=None,
+    )
+    return private_key.sign(payload, padding.PKCS1v15(), hashes.SHA256())
+
+
+def _ensure_doc_schema(conn: psycopg.Connection) -> None:
+    """Cria tabela de sequências e colunas necessárias sem quebrar o que já existe."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS doc_sequences (
+              prefix TEXT NOT NULL,
+              year   INT  NOT NULL,
+              next_seq INT NOT NULL,
+              PRIMARY KEY(prefix, year)
+            );
+            """
+        )
+        # Colunas no pedidos (idempotente)
+        cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS doc_prefix TEXT;")
+        cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS doc_seq INT;")
+        cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS doc_number TEXT;")
+    conn.commit()
+
+
+def _allocate_doc_number(conn: psycopg.Connection, include_nif: bool) -> tuple[str, int, str]:
+    """Gera número fiscalmente controlado no backend:
+    - OT AAAA/01... quando não tem NIF
+    - FR AAAA/01... quando tem NIF
+    Retorna (prefix, seq, doc_number).
+    """
+    prefix = "FR" if include_nif else "OT"
+    year = datetime.now().year
+
+    with conn.cursor() as cur:
+        # lock row or create
+        cur.execute("SELECT next_seq FROM doc_sequences WHERE prefix=%s AND year=%s FOR UPDATE;", (prefix, year))
+        row = cur.fetchone()
+        if row is None:
+            seq = 1
+            cur.execute(
+                "INSERT INTO doc_sequences(prefix, year, next_seq) VALUES (%s,%s,%s);",
+                (prefix, year, 2),
+            )
+        else:
+            seq = int(row[0])
+            cur.execute(
+                "UPDATE doc_sequences SET next_seq = next_seq + 1 WHERE prefix=%s AND year=%s;",
+                (prefix, year),
+            )
+    conn.commit()
+
+    doc_number = f"{prefix} {year}/{seq:02d}"
+    return prefix, seq, doc_number
+
 def _get_database_url() -> str | None:
     # Railway normalmente injeta DATABASE_URL, mas vamos aceitar variações
     return (
@@ -1158,11 +1115,11 @@ def criar_pedido():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif)
-                VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
+                INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif, doc_prefix, doc_seq, doc_number)
+                VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id_pedido
                 """,
-                (int(client_id), delivery_date, comments, discount, total_price, "Pendente", include_nif),
+                (int(client_id), delivery_date, comments, discount, total_price, "Pendente", include_nif, doc_prefix, doc_seq, doc_number),
             )
             pedido_id = cur.fetchone()["id_pedido"]
 
@@ -1531,6 +1488,38 @@ def debug_env():
 # -----------------------------------------------------------------------------
 # Local run
 # -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# QZ Tray endpoints
+# -----------------------------------------------------------------------------
+@app.get("/qz/health")
+def qz_health():
+    """Endpoint simples para validar se o backend está pronto para assinar e se o certificate.pem existe."""
+    certificate_url = "/static/qz/certificate.pem"
+    cert_path = os.path.join(app.root_path, "static", "qz", "certificate.pem")
+    return jsonify(
+        ok=True,
+        certificate_url=certificate_url,
+        has_certificate_file=os.path.exists(cert_path),
+        has_private_key_env=bool(_qz_private_key_pem()),
+    )
+
+
+@app.post("/qz/sign")
+def qz_sign():
+    """Recebe bytes do QZ e devolve assinatura base64 (SHA256/RSA)."""
+    try:
+        payload = request.get_data() or b""
+        sig = _sign_bytes_sha256_rsa_pkcs1v15(payload)
+        sig_b64 = base64.b64encode(sig).decode("ascii")
+        # QZ espera texto puro
+        return sig_b64, 200, {"Content-Type": "text/plain; charset=utf-8"}
+    except Exception as e:
+        print("[QZ/SIGN] ERRO:", repr(e))
+        print(traceback.format_exc())
+        return "error", 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "7000"))
     app.run(host="0.0.0.0", port=port, debug=True)
