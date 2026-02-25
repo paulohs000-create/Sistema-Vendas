@@ -6,6 +6,7 @@ from functools import wraps
 import psycopg
 from psycopg.rows import dict_row
 from flask import (
+    Response,
     Flask,
     jsonify,
     redirect,
@@ -30,100 +31,75 @@ def _qz_private_key_pem() -> str | None:
     # chave PEM armazenada no Railway Variables
     return os.environ.get("QZ_PRIVATE_KEY_PEM") or os.environ.get("QZ_PRIVATE_KEY")
 
-def _qz_sign_payload(data: bytes) -> str:
-    """
-    Assina o payload do QZ Tray e devolve base64(signature).
+def _qz_certificate_pem() -> str | None:
+    # Prioridade: ENV -> arquivo em /static/qz/certificate.pem
+    env_pem = os.environ.get("QZ_CERTIFICATE_PEM") or os.environ.get("QZ_CERT_PEM")
+    if env_pem:
+        return env_pem
 
-    Importante:
-    - O QZ normalmente aceita SHA-256.
-    - Se precisar testar SHA-1, defina a env var: QZ_SIGNATURE_ALG=sha1
-    """
-    private_key_pem = (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
-    if not private_key_pem:
-        raise RuntimeError("QZ_PRIVATE_KEY_PEM vazio")
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        pem_path = os.path.join(here, "static", "qz", "certificate.pem")
+        if os.path.exists(pem_path):
+            with open(pem_path, "r", encoding="utf-8") as f:
+                return f.read()
+    except Exception:
+        pass
+    return None
 
-    alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip()
-
-    # Usamos cryptography (backend do pyOpenSSL) porque crypto.sign pode não existir
-    # em versões novas do pyOpenSSL.
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.asymmetric import padding
-    from cryptography.hazmat.primitives.serialization import load_pem_private_key
-
-    key = load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
-
-    if alg in ("sha1", "sha-1"):
-        h = hashes.SHA1()
-    elif alg in ("sha256", "sha-256"):
-        h = hashes.SHA256()
-    else:
-        raise RuntimeError(f"QZ_SIGNATURE_ALG inválido: {alg} (use sha256 ou sha1)")
-
-    signature = key.sign(data, padding.PKCS1v15(), h)
-    return base64.b64encode(signature).decode("utf-8")
 
 @app.get("/qz/health")
 def qz_health():
-    # Verifica se o arquivo público existe no container
-    cert_path = os.path.join(app.root_path, "static", "qz", "certificate.pem")
-    return jsonify({
-        "ok": True,
-        "certificate_url": "/static/qz/certificate.pem",
-        "has_certificate_file": os.path.exists(cert_path),
-        "has_private_key_env": bool(_qz_private_key_pem()),
-        "signature_alg": (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip(),
-    })
+    cert_pem = _qz_certificate_pem()
+    key_pem = _qz_private_key_pem()
+    return jsonify(
+        {
+            "ok": bool(cert_pem and key_pem),
+            "has_certificate": bool(cert_pem),
+            "has_private_key_env": bool(key_pem),
+        }
+    )
+
+
+@app.get("/qz/certificate")
+def qz_certificate():
+    cert_pem = _qz_certificate_pem()
+    if not cert_pem:
+        return "certificate not configured", 500
+    return Response(cert_pem, mimetype="text/plain")
+
 
 @app.post("/qz/sign")
 def qz_sign():
-    # QZ envia texto puro para assinar
-    payload = request.get_data(as_text=True) or ""
+    # O QZ envia texto puro (o "toSign"). Assinamos e devolvemos BASE64.
     try:
-        return (_qz_sign_payload(payload), 200, {"Content-Type": "text/plain; charset=utf-8"})
+        payload = request.get_data(as_text=True) or ""
+        return Response(_qz_sign_payload(payload), mimetype="text/plain")
     except Exception as e:
-        # Retorna texto puro para facilitar debug no frontend
-        return (f"ERROR: {e}", 500, {"Content-Type": "text/plain; charset=utf-8"})
+        return Response(str(e), mimetype="text/plain"), 500
 
+def _qz_sign_payload(payload: str) -> str:
+    """Assina o payload vindo do QZ e retorna BASE64 (texto puro).
 
-# -------------------------------------------------------------------------
-# Schema safety (migrações leves em runtime)
-# -------------------------------------------------------------------------
-def ensure_schema():
-    """Aplica ALTER TABLE leves e idempotentes.
-    Observação: para projetos maiores, prefira uma migração (Alembic).
+    Implementação via 'cryptography' (pyOpenSSL removeu OpenSSL.crypto.sign em várias versões).
     """
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # Flag para relatórios: pedido com contribuinte (NIF) selecionado
-                cur.execute(
-                    """
-                    ALTER TABLE IF EXISTS pedidos
-                    ADD COLUMN IF NOT EXISTS include_nif boolean NOT NULL DEFAULT false
-                    """
-                )
-            conn.commit()
-    except Exception as e:
-        # Não derruba o app por falha de migração leve; loga apenas.
-        print(f"[SCHEMA] ensure_schema falhou: {e}")
+    pem = _qz_private_key_pem()
+    if not pem:
+        raise RuntimeError("QZ_PRIVATE_KEY_PEM não configurada.")
 
+    alg = (os.environ.get("QZ_SIGNATURE_ALG", "sha256") or "sha256").lower().strip()
+    if alg not in ("sha1", "sha256"):
+        alg = "sha256"
 
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
 
-# -----------------------------------------------------------------------------
-# Database
-# -----------------------------------------------------------------------------
-def _get_database_url() -> str | None:
-    # Railway normalmente injeta DATABASE_URL, mas vamos aceitar variações
-    return (
-        os.environ.get("DATABASE_URL")
-        or os.environ.get("database_url")
-        or os.environ.get("POSTGRES_URL")
-        or os.environ.get("postgres_url")
-        or os.environ.get("DATABASE_URL_INTERNAL")
-        or os.environ.get("DATABASE_URL_PUBLIC")
-        or os.environ.get("DATABASE_URL_PRIVATE")
-        or os.environ.get("database_url_private")
-    )
+    key = serialization.load_pem_private_key(pem.encode("utf-8"), password=None)
+    hash_alg = hashes.SHA1() if alg == "sha1" else hashes.SHA256()
+    signature = key.sign(payload.encode("utf-8"), padding.PKCS1v15(), hash_alg)
+
+    return base64.b64encode(signature).decode("ascii")
+
 
 
 def get_db_connection():
@@ -135,49 +111,142 @@ def get_db_connection():
 
 
 # -----------------------------------------------------------------------------
-# Schema compatibility (clients vs clientes)
+# Compatibility layer: some deployments used table name "clients" while others
+# use "clientes". We resolve at runtime and optionally create a VIEW so both
+# names work. This avoids "não encontra cliente" when data lives in the other table.
 # -----------------------------------------------------------------------------
-# Algumas versões do seu banco usam tabela/colunas em PT (clientes, id_client),
-# outras em EN (clients, id). Este bloco detecta automaticamente.
-_CLIENT_TABLE: str | None = None
+_CLIENTS_TABLE_CACHE: str | None = None
 
-
-def _table_exists(conn: 'psycopg.Connection', table_name: str) -> bool:
+def _table_exists(conn, table_name: str, schema: str = "public") -> bool:
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT 1
-              FROM information_schema.tables
-             WHERE table_schema = 'public'
-               AND table_name = %s
-             LIMIT 1
-            """,
-            (table_name,),
+        cur.execute(f"""SELECT 1
+               FROM information_schema.tables
+               WHERE table_schema = %s AND table_name = %s
+               LIMIT 1""",
+            (schema, table_name),
         )
         return cur.fetchone() is not None
 
+def _column_exists(conn, table_name: str, column_name: str, schema: str = "public") -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT 1
+               FROM information_schema.columns
+               WHERE table_schema = %s AND table_name = %s AND column_name = %s
+               LIMIT 1""",
+            (schema, table_name, column_name),
+        )
+        return cur.fetchone() is not None
 
-def _client_table(conn: 'psycopg.Connection') -> str:
-    global _CLIENT_TABLE
-    if _CLIENT_TABLE:
-        return _CLIENT_TABLE
+def _resolve_clients_table(conn) -> str:
+    global _CLIENTS_TABLE_CACHE
+    if _CLIENTS_TABLE_CACHE:
+        return _CLIENTS_TABLE_CACHE
 
-    if _table_exists(conn, 'clientes'):
-        _CLIENT_TABLE = 'clientes'
-    elif _table_exists(conn, 'clients'):
-        _CLIENT_TABLE = 'clients'
-    else:
-        # Se não existir nenhuma (primeiro deploy), o ensure_schema cria 'clients'
-        _CLIENT_TABLE = 'clients'
-    return _CLIENT_TABLE
+    # Prefer the Portuguese name if it exists
+    if _table_exists(conn, "clientes"):
+        _CLIENTS_TABLE_CACHE = "clientes"
+        # If legacy table exists too, try to keep a view for compatibility
+        if _table_exists(conn, "clients") and not _table_exists(conn, "clientes_legacy_view"):
+            pass
+        return _CLIENTS_TABLE_CACHE
+
+    # Fallback to legacy "clients"
+    if _table_exists(conn, "clients"):
+        _CLIENTS_TABLE_CACHE = "clients"
+        return _CLIENTS_TABLE_CACHE
+
+    # If none exists, create the current one
+    _CLIENTS_TABLE_CACHE = "clientes"
+    with conn.cursor() as cur:
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS clientes (
+                    id_client SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    phone TEXT NOT NULL,
+                    nif TEXT
+                )"""
+        )
+    conn.commit()
+    return _CLIENTS_TABLE_CACHE
+
+def _ensure_clients_view(conn) -> None:
+    clients_table = get_clients_table()
+    """Create a compatibility VIEW so both 'clientes' and 'clients' work."""
+    # If both tables exist we will NOT auto-merge (could duplicate). We only create
+    # a view if one exists and the other doesn't.
+    try:
+        has_clientes = _table_exists(conn, "clientes")
+        has_clients = _table_exists(conn, "clients")
+
+        with conn.cursor() as cur:
+            if has_clients and not has_clientes:
+                # Create clientes view over clients
+                cur.execute(
+                    """DO $$
+                    BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM pg_views WHERE schemaname='public' AND viewname='clientes') THEN
+                            EXECUTE 'CREATE VIEW clientes AS SELECT * FROM {clients_table}';
+                        END IF;
+                    END $$;"""
+                )
+                conn.commit()
+
+            elif has_clientes and not has_clients:
+                # Create clients view over clientes
+                cur.execute(f"""DO $$
+                    BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM pg_views WHERE schemaname='public' AND viewname='clients') THEN
+                            EXECUTE 'CREATE VIEW clients AS SELECT * FROM {clients_table}';
+                        END IF;
+                    END $$;"""
+                )
+                conn.commit()
+    except Exception:
+        # Never break app startup due to view creation
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
-def _client_cols(table: str) -> dict[str, str]:
-    if table == 'clientes':
-        return {'id': 'id_client', 'name': 'name', 'phone': 'phone', 'nif': 'nif'}
-    return {'id': 'id', 'name': 'name', 'phone': 'phone', 'nif': 'nif'}
 
 
+# -----------------------------------------------------------------------------
+# Schema / migrations (leve)
+# -----------------------------------------------------------------------------
+
+def get_clients_table() -> str:
+    """Return the effective clients table name ('clientes' or legacy 'clients')."""
+    global _CLIENTS_TABLE_CACHE
+    if _CLIENTS_TABLE_CACHE:
+        return _CLIENTS_TABLE_CACHE
+    conn = get_db_connection()
+    try:
+        _ensure_clients_view(conn)
+        return _resolve_clients_table(conn)
+    finally:
+        conn.close()
+def ensure_schema():
+    """Aplica ALTER TABLE leves e idempotentes.
+    Observação: para projetos maiores, prefira uma migração (Alembic).
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Flag para relatórios: pedido com contribuinte (NIF) selecionado
+                cur.execute(f"""
+                    ALTER TABLE IF EXISTS pedidos
+                    ADD COLUMN IF NOT EXISTS include_nif boolean NOT NULL DEFAULT false
+                    """
+                )
+            conn.commit()
+    except Exception as e:
+        # Não derruba o app por falha de migração leve; loga apenas.
+        print(f"[SCHEMA] ensure_schema falhou: {e}")
+
+# Executa migração leve no boot (idempotente)
+ensure_schema()
 def handle_errors(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -191,11 +260,6 @@ def handle_errors(f):
             return jsonify({"error": str(e)}), 500
 
     return wrapper
-
-
-ensure_schema()
-
-
 # -----------------------------------------------------------------------------
 # Auth
 # -----------------------------------------------------------------------------
@@ -789,10 +853,10 @@ def serve_seamstress_page():
 @login_required(["admin", "caixa"])
 @handle_errors
 def get_client_by_phone(phone):
+    clients_table = get_clients_table()
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id_client, name, nif FROM clients WHERE phone = %s",
+            cur.execute(f"SELECT id_client, name, nif FROM {clients_table} WHERE phone = %s",
                 (phone,),
             )
             row = cur.fetchone()
@@ -803,15 +867,13 @@ def get_client_by_phone(phone):
 
 
 @app.get("/clients/search")
-@app.get("/clientes/search")  # compat
 @login_required(["admin", "caixa"])
 @handle_errors
 def search_clients():
+    clients_table = get_clients_table()
     """Busca por telefone (parcial) ou nome.
     Query param: ?q=...
     Retorna lista (máx 20).
-
-    Compatível com bancos que usam tabela/PK em PT (clientes/id_client) ou EN (clients/id).
     """
     q = (request.args.get("q") or "").strip()
     if not q:
@@ -821,40 +883,11 @@ def search_clients():
     like_name = f"%{q}%"
     like_phone = f"%{q_digits}%" if q_digits else None
 
-    with get_db_connection() as conn:
-        table = _client_table(conn)
-        cols = _client_cols(table)
-
-        sql = (
-            f"SELECT {cols['id']} AS id, {cols['name']} AS name, {cols['phone']} AS phone, {cols['nif']} AS nif "
-            f"FROM {table} WHERE "
-        )
-        params = []
-
-        if like_phone:
-            sql += "(regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') LIKE %s) OR (name ILIKE %s) "
-            params.extend([like_phone, like_name])
-        else:
-            sql += "name ILIKE %s "
-            params.append(like_name)
-
-        sql += "ORDER BY name ASC LIMIT 20"
-
-        with conn.cursor() as cur:
-            cur.execute(sql, tuple(params))
-            rows = cur.fetchall() or []
-
-    return jsonify({"results": rows}), 200
-
-    q_digits = "".join([c for c in q if c.isdigit()])
-    like_name = f"%{q}%"
-    like_phone = f"%{q_digits}%" if q_digits else None
-
-    sql = "SELECT id_client, name, phone, nif FROM clients WHERE "
+    sql = "SELECT id_client, name, phone, nif FROM {clients_table} WHERE "
     params = []
 
     if like_phone:
-        sql += "(regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') LIKE %s) OR (name ILIKE %s) "
+        sql += "(phone ILIKE %s) OR (name ILIKE %s) "
         params.extend([like_phone, like_name])
     else:
         sql += "name ILIKE %s "
@@ -879,10 +912,10 @@ def search_clients():
 
 
 @app.post("/clients")
-@app.post("/clientes")  # compat
 @login_required(["admin", "caixa"])
 @handle_errors
 def add_client():
+    clients_table = get_clients_table()
     data = request.get_json(force=True) or {}
     name = (data.get("name") or "").strip()
     phone = (data.get("phone") or "").strip()
@@ -892,14 +925,11 @@ def add_client():
         return jsonify({"error": "Nome e telefone são obrigatórios."}), 400
 
     with get_db_connection() as conn:
-        table = _client_table(conn)
-        cols = _client_cols(table)
         with conn.cursor() as cur:
-            cur.execute(
-                f"INSERT INTO {table} (name, phone, nif) VALUES (%s, %s, %s) RETURNING {cols['id']} AS id",
+            cur.execute(f"INSERT INTO {clients_table} (name, phone, nif) VALUES (%s, %s, %s) RETURNING id_client",
                 (name, phone, nif),
             )
-            new_id = cur.fetchone()["id"]
+            new_id = cur.fetchone()["id_client"]
         conn.commit()
 
     return jsonify({"message": "Cliente cadastrado com sucesso", "id": new_id}), 201
@@ -909,6 +939,7 @@ def add_client():
 @login_required(["admin", "caixa"])
 @handle_errors
 def update_client_nif(client_id):
+    clients_table = get_clients_table()
     data = request.get_json(force=True) or {}
     nif = (data.get("nif") or "").strip()
     if not nif:
@@ -916,8 +947,7 @@ def update_client_nif(client_id):
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE clients SET nif = %s WHERE id_client = %s",
+            cur.execute(f"UPDATE {clients_table} SET nif = %s WHERE id_client = %s",
                 (nif, client_id),
             )
             updated = cur.rowcount
@@ -932,10 +962,10 @@ def update_client_nif(client_id):
 @login_required(["admin", "caixa"])
 @handle_errors
 def get_client_by_id(client_id):
+    clients_table = get_clients_table()
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id_client, name, phone, nif FROM clients WHERE id_client = %s",
+            cur.execute(f"SELECT id_client, name, phone, nif FROM {clients_table} WHERE id_client = %s",
                 (client_id,),
             )
             row = cur.fetchone()
@@ -952,6 +982,7 @@ def get_client_by_id(client_id):
 @login_required(["admin", "caixa"])
 @handle_errors
 def update_client_by_id(client_id):
+    clients_table = get_clients_table()
     data = request.get_json(force=True) or {}
     name = (data.get("name") or "").strip()
     phone = (data.get("phone") or "").strip()
@@ -963,16 +994,14 @@ def update_client_by_id(client_id):
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             # Impede duplicação de telefone em outro cliente
-            cur.execute(
-                "SELECT id_client FROM clients WHERE phone = %s AND id_client <> %s",
+            cur.execute(f"SELECT id_client FROM {clients_table} WHERE phone = %s AND id_client <> %s",
                 (phone, client_id),
             )
             exists = cur.fetchone()
             if exists:
                 return jsonify({"error": "Já existe outro cliente com este telefone."}), 409
 
-            cur.execute(
-                "UPDATE clients SET name = %s, phone = %s, nif = %s WHERE id_client = %s",
+            cur.execute(f"UPDATE {clients_table} SET name = %s, phone = %s, nif = %s WHERE id_client = %s",
                 (name, phone, nif, client_id),
             )
             updated = cur.rowcount
@@ -1153,35 +1182,80 @@ def delete_seamstress(seamstress_id):
 @login_required(["admin", "caixa"])
 @handle_errors
 def criar_pedido():
-    """
-    Espera o payload do atendimento.html:
-    {
-      clientId, deliveryDate, comments, discount, totalPrice,
-      services: [{id, quantity, description, preco, nome}]
-    }
-    """
+    clients_table = get_clients_table()
     data = request.get_json(force=True) or {}
 
-    client_id = data.get("clientId")
-    delivery_date = data.get("deliveryDate")
-    comments = data.get("comments")
-    discount = float(data.get("discount") or 0)
-    total_price = float(data.get("totalPrice") or 0)
-    include_nif = bool(data.get("include_nif") or data.get("includeNif") or False)
+    client_id = data.get("client_id")
     services = data.get("services") or []
+    comments = (data.get("comments") or "").strip()
+    delivery_date = data.get("delivery_date")  # 'YYYY-MM-DD' ou vazio
+    discount = float(data.get("discount") or 0.0)
+    include_nif = bool(data.get("include_nif") or False)
 
-    if not client_id or not delivery_date or not services:
-        return jsonify({"error": "clientId, deliveryDate e services são obrigatórios."}), 400
+    # Total
+    total_price = 0.0
+    for s in services:
+        try:
+            total_price += float(s.get("price") or 0.0) * int(s.get("quantity") or 1)
+        except Exception:
+            pass
+    total_price = max(0.0, total_price - discount)
+
+    if not client_id:
+        return jsonify({"ok": False, "error": "client_id obrigatório"}), 400
+    if not services:
+        return jsonify({"ok": False, "error": "Selecione ao menos 1 serviço"}), 400
+
+    year = datetime.now().year
 
     with get_db_connection() as conn:
-        with conn.cursor() as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
+            # Descobre se o cliente tem NIF cadastrado (e se o checkbox foi marcado)
+            cur.execute(f"SELECT nif FROM {clients_table} WHERE id_client = %s", (int(client_id),))
+            row = cur.fetchone() or {}
+            nif = (row.get("nif") or "").strip()
+            has_nif = bool(nif)
+
+            prefix = "FR" if (include_nif and has_nif) else "OT"
+
+            # Gera sequência por (prefix, year) de forma atômica
             cur.execute(
                 """
-                INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif)
-                VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
+                INSERT INTO doc_sequences (prefix, year, last_number)
+                VALUES (%s, %s, 1)
+                ON CONFLICT (prefix, year)
+                DO UPDATE SET last_number = doc_sequences.last_number + 1
+                RETURNING last_number;
+                """,
+                (prefix, year),
+            )
+            seq = int(cur.fetchone()["last_number"])
+
+            doc_full = f"{prefix} {year}/{seq:02d}"
+
+            # Cria pedido com doc_* preenchido (fiscalmente correto: controlado no backend)
+            cur.execute(
+                """
+                INSERT INTO pedidos (
+                    id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif,
+                    doc_prefix, doc_year, doc_seq, doc_full
+                )
+                VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id_pedido
                 """,
-                (int(client_id), delivery_date, comments, discount, total_price, "Pendente", include_nif),
+                (
+                    int(client_id),
+                    delivery_date,
+                    comments,
+                    discount,
+                    total_price,
+                    "Pendente",
+                    include_nif,
+                    prefix,
+                    year,
+                    seq,
+                    doc_full,
+                ),
             )
             pedido_id = cur.fetchone()["id_pedido"]
 
@@ -1191,15 +1265,25 @@ def criar_pedido():
                 desc = s.get("description")
                 cur.execute(
                     """
-                    INSERT INTO pedido_servicos (id_pedido, id_service, quantity, description, status)
+                    INSERT INTO pedido_servicos (id_pedido, id_service, quantity, descricao_extra, preco_unit)
                     VALUES (%s, %s, %s, %s, %s)
                     """,
-                    (pedido_id, int(service_id), qty, desc, "Pendente"),
+                    (pedido_id, service_id, qty, desc, float(s.get("price") or 0.0)),
                 )
 
         conn.commit()
 
-    return jsonify({"message": "Pedido criado com sucesso", "pedido_id": pedido_id}), 201
+    return jsonify(
+        {
+            "ok": True,
+            "pedido_id": pedido_id,
+            "doc_prefix": prefix,
+            "doc_year": year,
+            "doc_seq": seq,
+            "doc_full": doc_full,
+            "total": round(total_price, 2),
+        }
+    ), 201
 
 
 @app.get("/pedidos/stats")
