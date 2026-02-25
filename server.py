@@ -23,53 +23,6 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
 
 
-# -----------------------------------------------------------------------------
-# QZ Tray (assinatura + health)
-# -----------------------------------------------------------------------------
-def _qz_private_key_pem() -> str | None:
-    # chave PEM armazenada no Railway Variables
-    return os.environ.get("QZ_PRIVATE_KEY_PEM") or os.environ.get("QZ_PRIVATE_KEY")
-
-def _qz_sign_payload(payload: str) -> str:
-    """Assina o payload vindo do QZ e retorna BASE64 (texto puro)."""
-    pem = _qz_private_key_pem()
-    if not pem:
-        raise RuntimeError("QZ_PRIVATE_KEY_PEM não configurada.")
-
-    # Import aqui para evitar quebrar o app caso não esteja instalado
-    from OpenSSL import crypto  # type: ignore
-
-    pkey = crypto.load_privatekey(crypto.FILETYPE_PEM, pem.encode("utf-8"))
-
-    alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip()
-    digest = "sha256" if alg in ("sha256", "sha-256") else "sha1"
-
-    sig = crypto.sign(pkey, payload.encode("utf-8"), digest)
-    return base64.b64encode(sig).decode("utf-8").strip()
-
-@app.get("/qz/health")
-def qz_health():
-    # Verifica se o arquivo público existe no container
-    cert_path = os.path.join(app.root_path, "static", "qz", "certificate.pem")
-    return jsonify({
-        "ok": True,
-        "certificate_url": "/static/qz/certificate.pem",
-        "has_certificate_file": os.path.exists(cert_path),
-        "has_private_key_env": bool(_qz_private_key_pem()),
-        "signature_alg": (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip(),
-    })
-
-@app.post("/qz/sign")
-def qz_sign():
-    # QZ envia texto puro para assinar
-    payload = request.get_data(as_text=True) or ""
-    try:
-        return (_qz_sign_payload(payload), 200, {"Content-Type": "text/plain; charset=utf-8"})
-    except Exception as e:
-        # Retorna texto puro para facilitar debug no frontend
-        return (f"ERROR: {e}", 500, {"Content-Type": "text/plain; charset=utf-8"})
-
-
 # -------------------------------------------------------------------------
 # Schema safety (migrações leves em runtime)
 # -------------------------------------------------------------------------
@@ -117,129 +70,6 @@ def get_db_connection():
         raise RuntimeError("DATABASE_URL não está definida no ambiente.")
     # dict_row => cursor retorna dicts
     return psycopg.connect(db_url, row_factory=dict_row)
-
-
-# -----------------------------------------------------------------------------
-# Helpers: schema compatibility (clientes/clients) and numbering
-# -----------------------------------------------------------------------------
-def _table_exists(conn, table: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute("SELECT to_regclass(%s) IS NOT NULL AS ok", (f"public.{table}",))
-        row = cur.fetchone()
-        return bool(row["ok"]) if row else False
-
-def _get_columns(conn, table: str) -> set[str]:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = %s
-            """,
-            (table,),
-        )
-        return {r["column_name"] for r in cur.fetchall()}
-
-def resolve_clients_schema(conn) -> dict:
-    candidates = [
-        ("clientes", "id_client", ["nome", "name"], ["phone", "telefone", "tel"], ["nif"]),
-        ("clients", "id_client", ["name"], ["phone"], ["nif"]),
-    ]
-    for table, id_col, name_cols, phone_cols, nif_cols in candidates:
-        if not _table_exists(conn, table):
-            continue
-        cols = _get_columns(conn, table)
-        name_col = next((c for c in name_cols if c in cols), None)
-        phone_col = next((c for c in phone_cols if c in cols), None)
-        nif_col = next((c for c in nif_cols if c in cols), None)
-        if id_col in cols and name_col and phone_col:
-            return {"table": table, "id": id_col, "name": name_col, "phone": phone_col, "nif": nif_col}
-    return {"table": "clients", "id": "id_client", "name": "name", "phone": "phone", "nif": "nif"}
-
-def ensure_doc_counter_schema():
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS doc_counters (
-                    year INT NOT NULL,
-                    prefix TEXT NOT NULL,
-                    last_seq INT NOT NULL DEFAULT 0,
-                    PRIMARY KEY (year, prefix)
-                )
-                """
-            )
-        conn.commit()
-
-def next_doc_number(prefix: str) -> tuple[int, str]:
-    ensure_doc_counter_schema()
-    year = datetime.utcnow().year
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO doc_counters (year, prefix, last_seq)
-                VALUES (%s, %s, 0)
-                ON CONFLICT (year, prefix) DO NOTHING
-                """,
-                (year, prefix),
-            )
-            cur.execute(
-                """
-                SELECT last_seq FROM doc_counters
-                WHERE year=%s AND prefix=%s
-                FOR UPDATE
-                """,
-                (year, prefix),
-            )
-            row = cur.fetchone()
-            last_seq = int(row["last_seq"]) if row else 0
-            new_seq = last_seq + 1
-            cur.execute(
-                """
-                UPDATE doc_counters SET last_seq=%s
-                WHERE year=%s AND prefix=%s
-                """,
-                (new_seq, year, prefix),
-            )
-        conn.commit()
-    formatted = f"{prefix} {year}/{new_seq:02d}"
-    return new_seq, formatted
-
-def normalize_order_payload(data: dict) -> dict:
-    if not isinstance(data, dict):
-        return {}
-    client_id = (
-        data.get("clientId")
-        or data.get("clientID")
-        or data.get("client_id")
-        or data.get("id_client")
-        or data.get("idClient")
-        or data.get("clientid")
-    )
-    delivery_date = (
-        data.get("deliveryDate")
-        or data.get("delivery_date")
-        or data.get("delivery")
-        or data.get("dataEntrega")
-    )
-    services = (
-        data.get("services")
-        or data.get("servicos")
-        or data.get("items")
-        or data.get("itens")
-        or data.get("servicesSelected")
-    )
-    if isinstance(services, str):
-        try:
-            import json as _json
-            services = _json.loads(services)
-        except Exception:
-            pass
-    use_nif = bool(data.get("useNif") or data.get("withNif") or data.get("invoice") or data.get("faturaComNif"))
-    notes = data.get("notes") or data.get("observations") or data.get("obs") or data.get("observacoes") or ""
-    return {"client_id": client_id, "delivery_date": delivery_date, "services": services, "use_nif": use_nif, "notes": notes, "raw": data}
-
 
 
 def handle_errors(f):
@@ -594,6 +424,55 @@ def db_test():
     return jsonify({"db": "ok", "result": row}), 200
 
 
+# -----------------------------------------------------------------------------
+# QZ Tray signing (remove popup "Untrusted website")
+# -----------------------------------------------------------------------------
+@app.get("/qz/health")
+def qz_health():
+    """Diagnóstico simples para validar config no Railway."""
+    has_env_key = bool((os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip())
+    cert_path = os.path.join(app.static_folder or "static", "qz", "certificate.pem")
+    has_cert_file = os.path.exists(cert_path)
+    return jsonify({
+        "ok": True,
+        "has_private_key_env": has_env_key,
+        "has_certificate_file": has_cert_file,
+        "certificate_url": "/static/qz/certificate.pem",
+    }), 200
+
+
+@app.post("/qz/sign")
+def qz_sign():
+    """Assina o payload solicitado pelo QZ Tray e devolve base64 (texto puro)."""
+    data = request.get_data()  # bytes
+
+    private_key_pem = (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
+    if private_key_pem:
+        private_key_bytes = private_key_pem.encode("utf-8")
+    else:
+        # Fallback por arquivo (não recomendado em produção no Railway)
+        key_path = os.environ.get("QZ_PRIVATE_KEY_PATH", "private-key.pem")
+        if not os.path.exists(key_path):
+            return jsonify({"error": "Chave privada do QZ não encontrada (defina QZ_PRIVATE_KEY_PEM no Railway)."}), 500
+        with open(key_path, "rb") as f:
+            private_key_bytes = f.read()
+
+    try:
+        from OpenSSL import crypto
+    except Exception:
+        return jsonify({"error": "Dependência ausente: instale pyOpenSSL no requirements.txt"}), 500
+
+    try:
+        pkey = crypto.load_privatekey(crypto.FILETYPE_PEM, private_key_bytes)
+        signature = crypto.sign(pkey, data, "sha256")
+        signature_b64 = base64.b64encode(signature).decode("utf-8")
+        return signature_b64, 200, {"Content-Type": "text/plain; charset=utf-8"}
+    except Exception as e:
+        print(f"[QZ] Falha ao assinar: {e}")
+        return jsonify({"error": "Falha ao assinar para o QZ."}), 500
+
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "GET":
@@ -866,81 +745,73 @@ def get_client_by_phone(phone):
     return jsonify({"error": "Cliente não encontrado."}), 404
 
 
-
 @app.get("/clients/search")
-def clients_search():
+@login_required(["admin", "caixa"])
+@handle_errors
+def search_clients():
+    """Busca por telefone (parcial) ou nome.
+    Query param: ?q=...
+    Retorna lista (máx 20).
+    """
     q = (request.args.get("q") or "").strip()
     if not q:
-        return jsonify([])
+        return jsonify({"results": []}), 200
+
+    q_digits = "".join([c for c in q if c.isdigit()])
+    like_name = f"%{q}%"
+    like_phone = f"%{q_digits}%" if q_digits else None
+
+    sql = "SELECT id_client, name, phone, nif FROM clients WHERE "
+    params = []
+
+    if like_phone:
+        sql += "(phone ILIKE %s) OR (name ILIKE %s) "
+        params.extend([like_phone, like_name])
+    else:
+        sql += "name ILIKE %s "
+        params.append(like_name)
+
+    sql += "ORDER BY name ASC LIMIT 20"
 
     with get_db_connection() as conn:
-        schema = resolve_clients_schema(conn)
-        table = schema["table"]
-        id_col = schema["id"]
-        name_col = schema["name"]
-        phone_col = schema["phone"]
-        nif_col = schema.get("nif") or "nif"
-
         with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT
-                    {id_col} AS id_client,
-                    {name_col} AS name,
-                    {phone_col} AS phone,
-                    COALESCE({nif_col}, '') AS nif
-                FROM {table}
-                WHERE {phone_col} ILIKE %s OR {name_col} ILIKE %s
-                ORDER BY {name_col} ASC
-                LIMIT 20
-                """,
-                (f"%{q}%", f"%{q}%"),
-            )
-            rows = cur.fetchall()
-    return jsonify(rows)
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall() or []
+
+    return jsonify(
+        {
+            "results": [
+                {"id": r["id_client"], "name": r["name"], "phone": r["phone"], "nif": r["nif"]}
+                for r in rows
+            ]
+        }
+    ), 200
+
 
 
 @app.post("/clients")
-def create_client():
-    data = request.get_json(silent=True) or {}
-    name = (data.get("name") or data.get("nome") or "").strip()
-    phone = (data.get("phone") or data.get("telefone") or "").strip()
+@login_required(["admin", "caixa"])
+@handle_errors
+def add_client():
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    phone = (data.get("phone") or "").strip()
     nif = (data.get("nif") or "").strip() or None
 
     if not name or not phone:
-        return jsonify({"error": "name e phone são obrigatórios"}), 400
+        return jsonify({"error": "Nome e telefone são obrigatórios."}), 400
 
     with get_db_connection() as conn:
-        schema = resolve_clients_schema(conn)
-        table = schema["table"]
-        id_col = schema["id"]
-        name_col = schema["name"]
-        phone_col = schema["phone"]
-        nif_col = schema.get("nif")
-
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT {id_col} AS id_client FROM {table} WHERE {phone_col}=%s LIMIT 1",
-                (phone,),
+                "INSERT INTO clients (name, phone, nif) VALUES (%s, %s, %s) RETURNING id_client",
+                (name, phone, nif),
             )
-            existing = cur.fetchone()
-            if existing:
-                return jsonify({"id_client": existing["id_client"], "name": name, "phone": phone, "nif": nif or ""}), 200
-
-            if nif_col:
-                cur.execute(
-                    f"INSERT INTO {table} ({name_col}, {phone_col}, {nif_col}) VALUES (%s, %s, %s) RETURNING {id_col} AS id_client",
-                    (name, phone, nif),
-                )
-            else:
-                cur.execute(
-                    f"INSERT INTO {table} ({name_col}, {phone_col}) VALUES (%s, %s) RETURNING {id_col} AS id_client",
-                    (name, phone),
-                )
             new_id = cur.fetchone()["id_client"]
         conn.commit()
 
-    return jsonify({"id_client": new_id, "name": name, "phone": phone, "nif": nif or ""}), 201
+    return jsonify({"message": "Cliente cadastrado com sucesso", "id": new_id}), 201
+
 
 @app.put("/clients/<int:client_id>/nif")
 @login_required(["admin", "caixa"])
@@ -1186,122 +1057,58 @@ def delete_seamstress(seamstress_id):
 # -----------------------------------------------------------------------------
 # API - Pedidos
 # -----------------------------------------------------------------------------
-
 @app.post("/pedidos")
+@login_required(["admin", "caixa"])
+@handle_errors
 def criar_pedido():
-    payload = normalize_order_payload(request.get_json(silent=True) or {})
-    client_id = payload.get("client_id")
-    delivery_date = payload.get("delivery_date")
-    services = payload.get("services")
-    use_nif = payload.get("use_nif")
+    """
+    Espera o payload do atendimento.html:
+    {
+      clientId, deliveryDate, comments, discount, totalPrice,
+      services: [{id, quantity, description, preco, nome}]
+    }
+    """
+    data = request.get_json(force=True) or {}
+
+    client_id = data.get("clientId")
+    delivery_date = data.get("deliveryDate")
+    comments = data.get("comments")
+    discount = float(data.get("discount") or 0)
+    total_price = float(data.get("totalPrice") or 0)
+    include_nif = bool(data.get("include_nif") or data.get("includeNif") or False)
+    services = data.get("services") or []
 
     if not client_id or not delivery_date or not services:
         return jsonify({"error": "clientId, deliveryDate e services são obrigatórios."}), 400
 
-    normalized_services = []
-    if isinstance(services, dict):
-        for k, v in services.items():
-            if isinstance(v, dict):
-                normalized_services.append(v)
-            else:
-                try:
-                    price = float(v) if v is not None else 0.0
-                except Exception:
-                    price = 0.0
-                normalized_services.append({"name": str(k), "price": price, "qty": 1})
-    elif isinstance(services, list):
-        for item in services:
-            if isinstance(item, str):
-                normalized_services.append({"name": item, "price": 0.0, "qty": 1})
-            elif isinstance(item, dict):
-                normalized_services.append(item)
-    else:
-        return jsonify({"error": "Formato inválido para services"}), 400
-
     with get_db_connection() as conn:
-        schema = resolve_clients_schema(conn)
-        table = schema["table"]
-        id_col = schema["id"]
-        nif_col = schema.get("nif")
-
         with conn.cursor() as cur:
-            client_nif = ""
-            if nif_col:
-                cur.execute(
-                    f"SELECT COALESCE({nif_col}, '') AS nif FROM {table} WHERE {id_col}=%s",
-                    (int(client_id),),
-                )
-                r = cur.fetchone()
-                client_nif = (r["nif"] if r else "") or ""
-
-            prefix = "FR" if (use_nif and client_nif.strip()) else "OT"
-            seq, doc_number = next_doc_number(prefix)
-
-            # Your existing schema (pedidos/pedidos_itens) is kept if already exists
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS pedidos (
-                    id SERIAL PRIMARY KEY,
-                    client_id INT NOT NULL,
-                    delivery_date DATE NOT NULL,
-                    total NUMERIC(10,2) NOT NULL DEFAULT 0,
-                    notes TEXT,
-                    doc_prefix TEXT,
-                    doc_seq INT,
-                    doc_number TEXT,
-                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS pedidos_itens (
-                    id SERIAL PRIMARY KEY,
-                    pedido_id INT NOT NULL REFERENCES pedidos(id) ON DELETE CASCADE,
-                    name TEXT NOT NULL,
-                    price NUMERIC(10,2) NOT NULL DEFAULT 0,
-                    qty INT NOT NULL DEFAULT 1
-                )
-                """
-            )
-
-            total = 0.0
-            for s in normalized_services:
-                try:
-                    price = float(s.get("price") or s.get("valor") or 0)
-                except Exception:
-                    price = 0.0
-                qty = int(s.get("qty") or s.get("quantidade") or 1)
-                total += price * qty
-
-            cur.execute(
-                """
-                INSERT INTO pedidos (client_id, delivery_date, total, notes, doc_prefix, doc_seq, doc_number)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
+                INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif)
+                VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
+                RETURNING id_pedido
                 """,
-                (int(client_id), delivery_date, total, payload.get("notes") or "", prefix, seq, doc_number),
+                (int(client_id), delivery_date, comments, discount, total_price, "Pendente", include_nif),
             )
-            pedido_id = cur.fetchone()["id"]
+            pedido_id = cur.fetchone()["id_pedido"]
 
-            for s in normalized_services:
-                name = str(s.get("name") or s.get("servico") or s.get("descricao") or "Serviço")
-                try:
-                    price = float(s.get("price") or s.get("valor") or 0)
-                except Exception:
-                    price = 0.0
-                qty = int(s.get("qty") or s.get("quantidade") or 1)
+            for s in services:
+                service_id = s.get("id")
+                qty = int(s.get("quantity") or 1)
+                desc = s.get("description")
                 cur.execute(
                     """
-                    INSERT INTO pedidos_itens (pedido_id, name, price, qty)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO pedido_servicos (id_pedido, id_service, quantity, description, status)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
-                    (pedido_id, name, price, qty),
+                    (pedido_id, int(service_id), qty, desc, "Pendente"),
                 )
 
         conn.commit()
 
-    return jsonify({"id": pedido_id, "doc_number": doc_number, "doc_prefix": prefix, "doc_seq": seq, "total": total}), 201
+    return jsonify({"message": "Pedido criado com sucesso", "pedido_id": pedido_id}), 201
+
 
 @app.get("/pedidos/stats")
 @login_required(["admin", "costureira"])
