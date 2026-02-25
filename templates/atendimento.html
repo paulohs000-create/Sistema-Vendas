@@ -543,8 +543,8 @@ out.push(STORE_INFO.email + "\n");
             out.push(ALIGN_LEFT);
             out.push(twoCol(docType, docNumber));
             out.push(line("-"));
-            out.push(twoCol("Original", nowStr));
-            out.push(twoCol("Vencimento", vencStr));
+            out.push(twoCol("Data", nowStr));
+            out.push(twoCol("LEVANTAR", vencStr));
             out.push("\n");
 
             if (receiptData.includeNif && receiptData.nif && String(receiptData.nif).trim()) {
