@@ -379,8 +379,61 @@ function nextDocNumber(prefix, year) {
             phone: "925 442 437",
         };
 
+        let qzSecurityConfigured = false;
+
+        async function setupQZSecurity() {
+            if (!window.qz || qzSecurityConfigured) return;
+
+            const certUrl = `${API_URL}/static/qz/certificate.pem`;
+            const signUrl = `${API_URL}/qz/sign`;
+
+            qz.security.setCertificatePromise((resolve, reject) => {
+                fetch(certUrl, { cache: "no-store" })
+                    .then(resp => {
+                        if (!resp.ok) throw new Error(`Falha ao carregar certificado (${resp.status})`);
+                        return resp.text();
+                    })
+                    .then(cert => {
+                        if (!cert || !cert.includes("BEGIN CERTIFICATE")) {
+                            throw new Error("Certificado inválido em /static/qz/certificate.pem");
+                        }
+                        resolve(cert);
+                    })
+                    .catch(reject);
+            });
+
+            qz.security.setSignaturePromise(toSign => {
+                return function(resolve, reject) {
+                    fetch(signUrl, {
+                        method: "POST",
+                        headers: { "Content-Type": "text/plain; charset=utf-8" },
+                        body: toSign
+                    })
+                        .then(resp => {
+                            if (!resp.ok) {
+                                return resp.text().then(msg => {
+                                    throw new Error(msg || `Falha ao assinar payload (${resp.status})`);
+                                });
+                            }
+                            return resp.text();
+                        })
+                        .then(signature => {
+                            const sig = String(signature || "").trim();
+                            if (!sig || sig.startsWith("ERROR:")) {
+                                throw new Error(sig || "Assinatura vazia retornada por /qz/sign");
+                            }
+                            resolve(sig);
+                        })
+                        .catch(reject);
+                };
+            });
+
+            qzSecurityConfigured = true;
+        }
+
         async function conectarQZ() {
             if (!window.qz) throw new Error("QZ Tray não carregou.");
+            await setupQZSecurity();
             if (!qz.websocket.isActive()) {
                 await qz.websocket.connect();
             }
