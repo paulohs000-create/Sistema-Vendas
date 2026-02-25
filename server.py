@@ -6,7 +6,6 @@ from functools import wraps
 import psycopg
 from psycopg.rows import dict_row
 from flask import (
-    Response,
     Flask,
     jsonify,
     redirect,
@@ -31,90 +30,64 @@ def _qz_private_key_pem() -> str | None:
     # chave PEM armazenada no Railway Variables
     return os.environ.get("QZ_PRIVATE_KEY_PEM") or os.environ.get("QZ_PRIVATE_KEY")
 
-def _qz_certificate_pem() -> str | None:
-    # Prioridade: ENV -> arquivo em /static/qz/certificate.pem
-    env_pem = os.environ.get("QZ_CERTIFICATE_PEM") or os.environ.get("QZ_CERT_PEM")
-    if env_pem:
-        return env_pem
+def _qz_sign_payload(data: bytes) -> str:
+    """
+    Assina o payload do QZ Tray e devolve base64(signature).
 
-    try:
-        here = os.path.dirname(os.path.abspath(__file__))
-        pem_path = os.path.join(here, "static", "qz", "certificate.pem")
-        if os.path.exists(pem_path):
-            with open(pem_path, "r", encoding="utf-8") as f:
-                return f.read()
-    except Exception:
-        pass
-    return None
+    Importante:
+    - O QZ normalmente aceita SHA-256.
+    - Se precisar testar SHA-1, defina a env var: QZ_SIGNATURE_ALG=sha1
+    """
+    private_key_pem = (os.environ.get("QZ_PRIVATE_KEY_PEM") or "").strip()
+    if not private_key_pem:
+        raise RuntimeError("QZ_PRIVATE_KEY_PEM vazio")
 
+    alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip()
+
+    # Usamos cryptography (backend do pyOpenSSL) porque crypto.sign pode não existir
+    # em versões novas do pyOpenSSL.
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+    key = load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
+
+    if alg in ("sha1", "sha-1"):
+        h = hashes.SHA1()
+    elif alg in ("sha256", "sha-256"):
+        h = hashes.SHA256()
+    else:
+        raise RuntimeError(f"QZ_SIGNATURE_ALG inválido: {alg} (use sha256 ou sha1)")
+
+    signature = key.sign(data, padding.PKCS1v15(), h)
+    return base64.b64encode(signature).decode("utf-8")
 
 @app.get("/qz/health")
 def qz_health():
-    cert_pem = _qz_certificate_pem()
-    key_pem = _qz_private_key_pem()
-    return jsonify(
-        {
-            "ok": bool(cert_pem and key_pem),
-            "has_certificate": bool(cert_pem),
-            "has_private_key_env": bool(key_pem),
-        }
-    )
-
-
-@app.get("/qz/certificate")
-def qz_certificate():
-    cert_pem = _qz_certificate_pem()
-    if not cert_pem:
-        return "certificate not configured", 500
-    return Response(cert_pem, mimetype="text/plain")
-
+    # Verifica se o arquivo público existe no container
+    cert_path = os.path.join(app.root_path, "static", "qz", "certificate.pem")
+    return jsonify({
+        "ok": True,
+        "certificate_url": "/static/qz/certificate.pem",
+        "has_certificate_file": os.path.exists(cert_path),
+        "has_private_key_env": bool(_qz_private_key_pem()),
+        "signature_alg": (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip(),
+    })
 
 @app.post("/qz/sign")
 def qz_sign():
-    # O QZ envia texto puro (o "toSign"). Assinamos e devolvemos BASE64.
+    # QZ envia texto puro para assinar
+    payload = request.get_data(as_text=True) or ""
     try:
-        payload = request.get_data(as_text=True) or ""
-        return Response(_qz_sign_payload(payload), mimetype="text/plain")
+        return (_qz_sign_payload(payload), 200, {"Content-Type": "text/plain; charset=utf-8"})
     except Exception as e:
-        return Response(str(e), mimetype="text/plain"), 500
-
-def _qz_sign_payload(payload: str) -> str:
-    """Assina o payload vindo do QZ e retorna BASE64 (texto puro).
-
-    Implementação via 'cryptography' (pyOpenSSL removeu OpenSSL.crypto.sign em várias versões).
-    """
-    pem = _qz_private_key_pem()
-    if not pem:
-        raise RuntimeError("QZ_PRIVATE_KEY_PEM não configurada.")
-
-    alg = (os.environ.get("QZ_SIGNATURE_ALG", "sha256") or "sha256").lower().strip()
-    if alg not in ("sha1", "sha256"):
-        alg = "sha256"
-
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import padding
-
-    key = serialization.load_pem_private_key(pem.encode("utf-8"), password=None)
-    hash_alg = hashes.SHA1() if alg == "sha1" else hashes.SHA256()
-    signature = key.sign(payload.encode("utf-8"), padding.PKCS1v15(), hash_alg)
-
-    return base64.b64encode(signature).decode("ascii")
+        # Retorna texto puro para facilitar debug no frontend
+        return (f"ERROR: {e}", 500, {"Content-Type": "text/plain; charset=utf-8"})
 
 
-
-def get_db_connection():
-    db_url = _get_database_url()
-    if not db_url:
-        raise RuntimeError("DATABASE_URL não está definida no ambiente.")
-    # dict_row => cursor retorna dicts
-    return psycopg.connect(db_url, row_factory=dict_row)
-
-
-
-
-# -----------------------------------------------------------------------------
-# Schema / migrations (leve)
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
+# Schema safety (migrações leves em runtime)
+# -------------------------------------------------------------------------
 def ensure_schema():
     """Aplica ALTER TABLE leves e idempotentes.
     Observação: para projetos maiores, prefira uma migração (Alembic).
@@ -134,8 +107,77 @@ def ensure_schema():
         # Não derruba o app por falha de migração leve; loga apenas.
         print(f"[SCHEMA] ensure_schema falhou: {e}")
 
-# Executa migração leve no boot (idempotente)
-ensure_schema()
+
+
+# -----------------------------------------------------------------------------
+# Database
+# -----------------------------------------------------------------------------
+def _get_database_url() -> str | None:
+    # Railway normalmente injeta DATABASE_URL, mas vamos aceitar variações
+    return (
+        os.environ.get("DATABASE_URL")
+        or os.environ.get("database_url")
+        or os.environ.get("POSTGRES_URL")
+        or os.environ.get("postgres_url")
+        or os.environ.get("DATABASE_URL_INTERNAL")
+        or os.environ.get("DATABASE_URL_PUBLIC")
+        or os.environ.get("DATABASE_URL_PRIVATE")
+        or os.environ.get("database_url_private")
+    )
+
+
+def get_db_connection():
+    db_url = _get_database_url()
+    if not db_url:
+        raise RuntimeError("DATABASE_URL não está definida no ambiente.")
+    # dict_row => cursor retorna dicts
+    return psycopg.connect(db_url, row_factory=dict_row)
+
+
+# -----------------------------------------------------------------------------
+# Schema compatibility (clients vs clientes)
+# -----------------------------------------------------------------------------
+# Algumas versões do seu banco usam tabela/colunas em PT (clientes, id_client),
+# outras em EN (clients, id). Este bloco detecta automaticamente.
+_CLIENT_TABLE: str | None = None
+
+
+def _table_exists(conn: 'psycopg.Connection', table_name: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+              FROM information_schema.tables
+             WHERE table_schema = 'public'
+               AND table_name = %s
+             LIMIT 1
+            """,
+            (table_name,),
+        )
+        return cur.fetchone() is not None
+
+
+def _client_table(conn: 'psycopg.Connection') -> str:
+    global _CLIENT_TABLE
+    if _CLIENT_TABLE:
+        return _CLIENT_TABLE
+
+    if _table_exists(conn, 'clientes'):
+        _CLIENT_TABLE = 'clientes'
+    elif _table_exists(conn, 'clients'):
+        _CLIENT_TABLE = 'clients'
+    else:
+        # Se não existir nenhuma (primeiro deploy), o ensure_schema cria 'clients'
+        _CLIENT_TABLE = 'clients'
+    return _CLIENT_TABLE
+
+
+def _client_cols(table: str) -> dict[str, str]:
+    if table == 'clientes':
+        return {'id': 'id_client', 'name': 'name', 'phone': 'phone', 'nif': 'nif'}
+    return {'id': 'id', 'name': 'name', 'phone': 'phone', 'nif': 'nif'}
+
+
 def handle_errors(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -149,6 +191,11 @@ def handle_errors(f):
             return jsonify({"error": str(e)}), 500
 
     return wrapper
+
+
+ensure_schema()
+
+
 # -----------------------------------------------------------------------------
 # Auth
 # -----------------------------------------------------------------------------
@@ -756,12 +803,15 @@ def get_client_by_phone(phone):
 
 
 @app.get("/clients/search")
+@app.get("/clientes/search")  # compat
 @login_required(["admin", "caixa"])
 @handle_errors
 def search_clients():
     """Busca por telefone (parcial) ou nome.
     Query param: ?q=...
     Retorna lista (máx 20).
+
+    Compatível com bancos que usam tabela/PK em PT (clientes/id_client) ou EN (clients/id).
     """
     q = (request.args.get("q") or "").strip()
     if not q:
@@ -771,11 +821,40 @@ def search_clients():
     like_name = f"%{q}%"
     like_phone = f"%{q_digits}%" if q_digits else None
 
+    with get_db_connection() as conn:
+        table = _client_table(conn)
+        cols = _client_cols(table)
+
+        sql = (
+            f"SELECT {cols['id']} AS id, {cols['name']} AS name, {cols['phone']} AS phone, {cols['nif']} AS nif "
+            f"FROM {table} WHERE "
+        )
+        params = []
+
+        if like_phone:
+            sql += "(regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') LIKE %s) OR (name ILIKE %s) "
+            params.extend([like_phone, like_name])
+        else:
+            sql += "name ILIKE %s "
+            params.append(like_name)
+
+        sql += "ORDER BY name ASC LIMIT 20"
+
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall() or []
+
+    return jsonify({"results": rows}), 200
+
+    q_digits = "".join([c for c in q if c.isdigit()])
+    like_name = f"%{q}%"
+    like_phone = f"%{q_digits}%" if q_digits else None
+
     sql = "SELECT id_client, name, phone, nif FROM clients WHERE "
     params = []
 
     if like_phone:
-        sql += "(phone ILIKE %s) OR (name ILIKE %s) "
+        sql += "(regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') LIKE %s) OR (name ILIKE %s) "
         params.extend([like_phone, like_name])
     else:
         sql += "name ILIKE %s "
@@ -800,6 +879,7 @@ def search_clients():
 
 
 @app.post("/clients")
+@app.post("/clientes")  # compat
 @login_required(["admin", "caixa"])
 @handle_errors
 def add_client():
@@ -812,12 +892,14 @@ def add_client():
         return jsonify({"error": "Nome e telefone são obrigatórios."}), 400
 
     with get_db_connection() as conn:
+        table = _client_table(conn)
+        cols = _client_cols(table)
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO clients (name, phone, nif) VALUES (%s, %s, %s) RETURNING id_client",
+                f"INSERT INTO {table} (name, phone, nif) VALUES (%s, %s, %s) RETURNING {cols['id']} AS id",
                 (name, phone, nif),
             )
-            new_id = cur.fetchone()["id_client"]
+            new_id = cur.fetchone()["id"]
         conn.commit()
 
     return jsonify({"message": "Cliente cadastrado com sucesso", "id": new_id}), 201
@@ -1071,79 +1153,35 @@ def delete_seamstress(seamstress_id):
 @login_required(["admin", "caixa"])
 @handle_errors
 def criar_pedido():
+    """
+    Espera o payload do atendimento.html:
+    {
+      clientId, deliveryDate, comments, discount, totalPrice,
+      services: [{id, quantity, description, preco, nome}]
+    }
+    """
     data = request.get_json(force=True) or {}
 
-    client_id = data.get("client_id")
+    client_id = data.get("clientId")
+    delivery_date = data.get("deliveryDate")
+    comments = data.get("comments")
+    discount = float(data.get("discount") or 0)
+    total_price = float(data.get("totalPrice") or 0)
+    include_nif = bool(data.get("include_nif") or data.get("includeNif") or False)
     services = data.get("services") or []
-    comments = (data.get("comments") or "").strip()
-    delivery_date = data.get("delivery_date")  # 'YYYY-MM-DD' ou vazio
-    discount = float(data.get("discount") or 0.0)
-    include_nif = bool(data.get("include_nif") or False)
 
-    # Total
-    total_price = 0.0
-    for s in services:
-        try:
-            total_price += float(s.get("price") or 0.0) * int(s.get("quantity") or 1)
-        except Exception:
-            pass
-    total_price = max(0.0, total_price - discount)
-
-    if not client_id:
-        return jsonify({"ok": False, "error": "client_id obrigatório"}), 400
-    if not services:
-        return jsonify({"ok": False, "error": "Selecione ao menos 1 serviço"}), 400
-
-    year = datetime.now().year
+    if not client_id or not delivery_date or not services:
+        return jsonify({"error": "clientId, deliveryDate e services são obrigatórios."}), 400
 
     with get_db_connection() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            # Descobre se o cliente tem NIF cadastrado (e se o checkbox foi marcado)
-            cur.execute("SELECT nif FROM clientes WHERE id_client = %s", (int(client_id),))
-            row = cur.fetchone() or {}
-            nif = (row.get("nif") or "").strip()
-            has_nif = bool(nif)
-
-            prefix = "FR" if (include_nif and has_nif) else "OT"
-
-            # Gera sequência por (prefix, year) de forma atômica
+        with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO doc_sequences (prefix, year, last_number)
-                VALUES (%s, %s, 1)
-                ON CONFLICT (prefix, year)
-                DO UPDATE SET last_number = doc_sequences.last_number + 1
-                RETURNING last_number;
-                """,
-                (prefix, year),
-            )
-            seq = int(cur.fetchone()["last_number"])
-
-            doc_full = f"{prefix} {year}/{seq:02d}"
-
-            # Cria pedido com doc_* preenchido (fiscalmente correto: controlado no backend)
-            cur.execute(
-                """
-                INSERT INTO pedidos (
-                    id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif,
-                    doc_prefix, doc_year, doc_seq, doc_full
-                )
-                VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif)
+                VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
                 RETURNING id_pedido
                 """,
-                (
-                    int(client_id),
-                    delivery_date,
-                    comments,
-                    discount,
-                    total_price,
-                    "Pendente",
-                    include_nif,
-                    prefix,
-                    year,
-                    seq,
-                    doc_full,
-                ),
+                (int(client_id), delivery_date, comments, discount, total_price, "Pendente", include_nif),
             )
             pedido_id = cur.fetchone()["id_pedido"]
 
@@ -1153,25 +1191,15 @@ def criar_pedido():
                 desc = s.get("description")
                 cur.execute(
                     """
-                    INSERT INTO pedido_servicos (id_pedido, id_service, quantity, descricao_extra, preco_unit)
+                    INSERT INTO pedido_servicos (id_pedido, id_service, quantity, description, status)
                     VALUES (%s, %s, %s, %s, %s)
                     """,
-                    (pedido_id, service_id, qty, desc, float(s.get("price") or 0.0)),
+                    (pedido_id, int(service_id), qty, desc, "Pendente"),
                 )
 
         conn.commit()
 
-    return jsonify(
-        {
-            "ok": True,
-            "pedido_id": pedido_id,
-            "doc_prefix": prefix,
-            "doc_year": year,
-            "doc_seq": seq,
-            "doc_full": doc_full,
-            "total": round(total_price, 2),
-        }
-    ), 201
+    return jsonify({"message": "Pedido criado com sucesso", "pedido_id": pedido_id}), 201
 
 
 @app.get("/pedidos/stats")
