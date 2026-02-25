@@ -13,7 +13,7 @@
 
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        body { font-family: 'Inter', sans-serif; background-color: #f7f3f1; background-image: radial-gradient(1200px 600px at 50% -200px, rgba(124,58,237,0.18), transparent 60%), radial-gradient(900px 500px at 10% 20%, rgba(99,102,241,0.10), transparent 55%), radial-gradient(900px 500px at 90% 20%, rgba(236,72,153,0.08), transparent 55%); }
+        body { font-family: 'Inter', sans-serif; background-color: #f7f3f1; }
         .fade-in { animation: fadeIn 0.5s ease-in-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
@@ -53,7 +53,7 @@
 
 
     <section id="section-atendimento">
-  <div id="main-application" class="bg-white/90 backdrop-blur p-10 sm:p-12 rounded-3xl shadow-2xl border border-white/60 w-full max-w-5xl space-y-10">
+  <div id="main-application" class="bg-white p-10 sm:p-12 rounded-2xl shadow-2xl w-full max-w-5xl space-y-10">
         
         <header id="main-header" class="text-center">
             <h1 class="text-3xl sm:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600">
@@ -516,10 +516,6 @@ function nextDocNumber(prefix, year) {
             const out = [];
 
             out.push(RESET);
-
-            // ✅ Code page (acentos PT): tenta CP858 (Europa Ocidental)
-            // Se sua impressora não suportar, troque para: "\\x1B\\x74\\x03" (CP860) ou "\\x1B\\x74\\x02" (CP850)
-            out.push("\\x1B\\x74\\x13");
 
             out.push(ALIGN_CENTER);
             out.push(BOLD_ON);
@@ -1041,7 +1037,7 @@ const handleClientSearch = async () => {
                 });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || 'Erro ao cadastrar.');
-                currentClient = { id: result.id ?? result.id_client, id_client: result.id ?? result.id_client, name: name, nif: nif };
+                currentClient = { id: result.id_client, id_client: result.id_client, name: name, nif: nif };
                 clientDetailsInputDiv.classList.add('hidden');
                 clientInfoParagraph.innerHTML = `Cliente cadastrado: <strong class="text-purple-700">${name}</strong>`;
                 clientInfoParagraph.className = 'text-green-600 text-base font-semibold mt-3 h-6';
@@ -1070,7 +1066,7 @@ const handleClientSearch = async () => {
             serviceCategoriesDiv.innerHTML = '';
             Object.keys(categories).forEach(category => {
                 const button = document.createElement('button');
-                button.className = 'w-full text-center p-4 rounded-2xl bg-gradient-to-b from-purple-50 to-white hover:from-purple-100 hover:to-white border border-purple-100 hover:border-purple-300 text-purple-900 font-semibold shadow-sm hover:shadow transition-all duration-200 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-purple-400';
+                button.className = 'w-full text-center p-6 rounded-xl bg-purple-50 hover:bg-purple-200 border-2 border-purple-100 hover:border-purple-300 text-purple-800 font-bold transition-all duration-300 transform hover:scale-105';
                 button.textContent = category;
                 button.onclick = () => { currentCategory = category; const hint = document.getElementById("global-service-search-hint"); if (hint) hint.textContent = "Categoria selecionada. Você pode avançar ou escolher um serviço."; displaySpecificServices(category); };
                 serviceCategoriesDiv.appendChild(button);
@@ -1354,7 +1350,7 @@ function normalizeText(s) {
             globalSearchBox.classList.remove("hidden");
             globalSearchBox.innerHTML = items.map(it => `
                 <button type="button" class="w-full text-left p-3 rounded-xl hover:bg-purple-50 border border-gray-100 mb-2 last:mb-0"
-                        data-id="${it.id}" data-cat="${it.category}" data-name="${it.name}" data-price="${it.price}">
+                        data-cat="${it.category}" data-name="${it.name}" data-price="${it.price}">
                     <div class="font-semibold text-gray-900">${it.name}</div>
                     <div class="text-xs text-gray-500">${it.category} • € ${Number(it.price || 0).toFixed(2)}</div>
                 </button>
@@ -1404,21 +1400,15 @@ globalSearchBox?.addEventListener("click", (e) => {
             const btn = e.target.closest("button[data-cat]");
             if (!btn) return;
 
-            const id = parseInt(btn.getAttribute("data-id") || "", 10);
             const cat = btn.getAttribute("data-cat");
             const name = btn.getAttribute("data-name");
             const price = parseFloat(btn.getAttribute("data-price") || "0") || 0;
 
-            if (!id || isNaN(id)) {
-                alert("Erro: este serviço não tem ID. Recarregue a página e tente novamente.");
-                return;
-            }
-
             // Define a categoria atual (para o botão "Avançar" e para contexto)
             currentCategory = cat;
 
-            // Adiciona o serviço direto ao pedido (COM ID, para não quebrar o backend)
-            addServiceToOrder({ id: id, nome: name, preco: price, categoria: cat }, 1, "");
+            // Adiciona o serviço direto ao pedido
+            addServiceToOrder({ nome: name, preco: price, categoria: cat }, 1, "");
 
             // Limpa UI de busca
             renderGlobalResults([]);
