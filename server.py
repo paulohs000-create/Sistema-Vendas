@@ -25,6 +25,36 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
 
 
 # -----------------------------------------------------------------------------
+# Database URL helper (Railway compat)
+# -----------------------------------------------------------------------------
+def _get_database_url() -> str | None:
+    # Railway normalmente injeta DATABASE_URL. Mantemos compatibilidade com variações.
+    url = (
+        os.environ.get("DATABASE_URL")
+        or os.environ.get("POSTGRES_URL")
+        or os.environ.get("POSTGRESQL_URL")
+        or os.environ.get("PGDATABASE_URL")
+    )
+    if url:
+        return url
+
+    # Fallback: montar via variáveis separadas (PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE)
+    host = os.environ.get("PGHOST") or os.environ.get("POSTGRES_HOST")
+    user = os.environ.get("PGUSER") or os.environ.get("POSTGRES_USER")
+    password = os.environ.get("PGPASSWORD") or os.environ.get("POSTGRES_PASSWORD")
+    dbname = os.environ.get("PGDATABASE") or os.environ.get("POSTGRES_DB")
+    port = os.environ.get("PGPORT") or os.environ.get("POSTGRES_PORT") or "5432"
+
+    if host and user and dbname:
+        auth = user
+        if password:
+            auth = f"{user}:{password}"
+        return f"postgresql://{auth}@{host}:{port}/{dbname}"
+
+    return None
+
+
+# -----------------------------------------------------------------------------
 # QZ Tray (assinatura + health)
 # -----------------------------------------------------------------------------
 def _qz_private_key_pem() -> str | None:
