@@ -1041,7 +1041,7 @@ const handleClientSearch = async () => {
                 });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || 'Erro ao cadastrar.');
-                currentClient = { id: result.id_client, id_client: result.id_client, name: name, nif: nif };
+                currentClient = { id: result.id ?? result.id_client, id_client: result.id ?? result.id_client, name: name, nif: nif };
                 clientDetailsInputDiv.classList.add('hidden');
                 clientInfoParagraph.innerHTML = `Cliente cadastrado: <strong class="text-purple-700">${name}</strong>`;
                 clientInfoParagraph.className = 'text-green-600 text-base font-semibold mt-3 h-6';
@@ -1354,7 +1354,7 @@ function normalizeText(s) {
             globalSearchBox.classList.remove("hidden");
             globalSearchBox.innerHTML = items.map(it => `
                 <button type="button" class="w-full text-left p-3 rounded-xl hover:bg-purple-50 border border-gray-100 mb-2 last:mb-0"
-                        data-cat="${it.category}" data-name="${it.name}" data-price="${it.price}">
+                        data-id="${it.id}" data-cat="${it.category}" data-name="${it.name}" data-price="${it.price}">
                     <div class="font-semibold text-gray-900">${it.name}</div>
                     <div class="text-xs text-gray-500">${it.category} • € ${Number(it.price || 0).toFixed(2)}</div>
                 </button>
@@ -1404,15 +1404,21 @@ globalSearchBox?.addEventListener("click", (e) => {
             const btn = e.target.closest("button[data-cat]");
             if (!btn) return;
 
+            const id = parseInt(btn.getAttribute("data-id") || "", 10);
             const cat = btn.getAttribute("data-cat");
             const name = btn.getAttribute("data-name");
             const price = parseFloat(btn.getAttribute("data-price") || "0") || 0;
 
+            if (!id || isNaN(id)) {
+                alert("Erro: este serviço não tem ID. Recarregue a página e tente novamente.");
+                return;
+            }
+
             // Define a categoria atual (para o botão "Avançar" e para contexto)
             currentCategory = cat;
 
-            // Adiciona o serviço direto ao pedido
-            addServiceToOrder({ nome: name, preco: price, categoria: cat }, 1, "");
+            // Adiciona o serviço direto ao pedido (COM ID, para não quebrar o backend)
+            addServiceToOrder({ id: id, nome: name, preco: price, categoria: cat }, 1, "");
 
             // Limpa UI de busca
             renderGlobalResults([]);
