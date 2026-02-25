@@ -49,6 +49,7 @@ def _qz_sign_payload(payload: bytes) -> str:
 
     alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip()
     digest = hashes.SHA256() if alg in ("sha256", "sha-256") else hashes.SHA1()
+<<<<<<< codex/imprimir-erro-r5szg5
 
     private_key = serialization.load_pem_private_key(
         pem.encode("utf-8"),
@@ -57,6 +58,16 @@ def _qz_sign_payload(payload: bytes) -> str:
 
     sig = private_key.sign(
         payload,
+=======
+
+    private_key = serialization.load_pem_private_key(
+        pem.encode("utf-8"),
+        password=None,
+    )
+
+    sig = private_key.sign(
+        payload.encode("utf-8"),
+>>>>>>> main
         padding.PKCS1v15(),
         digest,
     )
