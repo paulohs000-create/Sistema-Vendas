@@ -36,15 +36,24 @@ def _qz_sign_payload(payload: str) -> str:
     if not pem:
         raise RuntimeError("QZ_PRIVATE_KEY_PEM não configurada.")
 
-    # Import aqui para evitar quebrar o app caso não esteja instalado
-    from OpenSSL import crypto  # type: ignore
-
-    pkey = crypto.load_privatekey(crypto.FILETYPE_PEM, pem.encode("utf-8"))
+    # pyOpenSSL removeu crypto.sign em versões recentes, então assinamos
+    # direto com cryptography para manter compatibilidade.
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
 
     alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip()
-    digest = "sha256" if alg in ("sha256", "sha-256") else "sha1"
+    digest = hashes.SHA256() if alg in ("sha256", "sha-256") else hashes.SHA1()
 
-    sig = crypto.sign(pkey, payload.encode("utf-8"), digest)
+    private_key = serialization.load_pem_private_key(
+        pem.encode("utf-8"),
+        password=None,
+    )
+
+    sig = private_key.sign(
+        payload.encode("utf-8"),
+        padding.PKCS1v15(),
+        digest,
+    )
     return base64.b64encode(sig).decode("utf-8").strip()
 
 @app.get("/qz/health")

@@ -1434,9 +1434,20 @@ globalSearchBox?.addEventListener("click", (e) => {
             : "Requer endpoint /print no backend.";
 
 
-        window.addEventListener("load", async () => {
-            try { await conectarQZ(); } catch (e) { /* silencioso */ }
-        });
+        async function primeQZConnection() {
+            if (PRINT_MODE !== "qz") return;
+            try {
+                await conectarQZ();
+            } catch (e) {
+                console.warn("QZ pré-conexão falhou:", e);
+            }
+        }
+
+        window.addEventListener("DOMContentLoaded", primeQZConnection);
+        window.addEventListener("load", primeQZConnection);
+
+        // fallback curto para cenários em que o QZ script demora para ficar disponível
+        setTimeout(primeQZConnection, 1200);
 
     </script>
     </main>
