@@ -364,58 +364,7 @@ function nextDocNumber(prefix, year) {
         // ============================
         // CONFIG IMPRESSÃO (QZ)
         // ============================
-        var PRINTER_NAME = "POS-80";   // nome exato no Windows
-
-  // ---------------------------------------------------------------------------
-  // QZ Tray - Segurança (certificate + signature) para evitar popups de "Untrusted"
-  // IMPORTANTE: isso precisa rodar ANTES de qualquer qz.websocket.connect()
-  // ---------------------------------------------------------------------------
-  const QZ_CERT_URL = "/static/qz/certificate.pem"; // servido pelo backend (Railway)
-  const QZ_SIGN_URL = "/qz/sign";                   // backend assina o payload
-
-  (function setupQZSecurity(){
-    try {
-      if (!window.qz || !qz.security) return;
-
-      // Certificado público usado pelo QZ para identificar este site
-      qz.security.setCertificatePromise(function(resolve, reject) {
-        fetch(QZ_CERT_URL, { cache: "no-store" })
-          .then(r => {
-            if (!r.ok) throw new Error("Falha ao carregar certificate.pem (" + r.status + ")");
-            return r.text();
-          })
-          .then(resolve)
-          .catch(reject);
-      });
-
-      // Assinatura: o QZ envia o texto a ser assinado e o backend devolve a assinatura em Base64
-      qz.security.setSignaturePromise(function(toSign) {
-        // IMPORTANTE:
-        // O qz-tray.js espera que esta função retorne um "resolver" (function(resolve,reject)),
-        // não um Promise direto. Se retornar Promise aqui, ocorre:
-        // "Promise resolver #<Promise> is not a function"
-        return function(resolve, reject) {
-          fetch(QZ_SIGN_URL, {
-            method: "POST",
-            headers: { "Content-Type": "text/plain" },
-            body: toSign
-          })
-            .then(r => {
-              if (!r.ok) {
-                return r.text().then(t => { throw new Error("Falha em /qz/sign (" + r.status + "): " + t); });
-              }
-              return r.text();
-            })
-            .then(sig => resolve(sig))
-            .catch(err => reject(err));
-        };
-      });
-
-    } catch (e) {
-      console.warn("QZ security setup falhou:", e);
-    }
-  })();
-
+        const PRINTER_NAME = "POS-80";   // nome exato no Windows
         const VAT_RATE = 0.23;           // 23%
         const PAPER_WIDTH_CHARS = 42;    // 80mm costuma 42~48
 
@@ -428,10 +377,101 @@ function nextDocNumber(prefix, year) {
             nif: "517725576",
             email: "pontoelinhapt@gmail.com",
             phone: "925 442 437",
+
+
+        // ============================
+        // QZ SECURITY (REMOVE POPUP "UNTRUSTED")
+        // ============================
+        // Observação importante:
+        // - Se certificado/assinatura não estiverem configurados no Railway ainda,
+        //   continuamos imprimindo em modo "anônimo" (com popup), sem quebrar o fluxo.
+        let QZ_SECURITY_READY = false;
+        let QZ_CERT_CACHE = null;
+
+        async function waitForQZ(maxMs = 8000) {
+            const start = Date.now();
+            while ((!window.qz || !qz.websocket) && (Date.now() - start) < maxMs) {
+                await new Promise(r => setTimeout(r, 100));
+            }
+            if (!window.qz || !qz.websocket) {
+                throw new Error("QZ Tray JS não carregou (window.qz indisponível).");
+            }
+        }
+
+        function looksLikeBase64(s) {
+            if (!s) return false;
+            const t = String(s).trim();
+            // base64 típico: A-Z a-z 0-9 + / e = no final
+            return /^[A-Za-z0-9+/=\r\n]+$/.test(t) && t.length > 40;
+        }
+
+        async function tryEnableQZSecurity() {
+            if (QZ_SECURITY_READY) return true;
+
+            await waitForQZ();
+
+            // Se qz.security não existir, não dá para assinar
+            if (!qz.security) return false;
+
+            // 1) tenta carregar certificado público
+            try {
+                const certResp = await fetch(`${API_URL}/static/qz/certificate.pem`, { cache: "no-store" });
+                if (!certResp.ok) return false;
+                const certText = await certResp.text();
+                if (!certText || !certText.includes("BEGIN CERTIFICATE")) return false;
+                QZ_CERT_CACHE = certText;
+            } catch (e) {
+                return false;
+            }
+
+            // 2) faz um "probe" no /qz/sign para garantir que o backend está pronto
+            try {
+                const probe = await fetch(`${API_URL}/qz/sign`, {
+                    method: "POST",
+                    headers: { "Content-Type": "text/plain" },
+                    body: "qz-probe"
+                });
+                if (!probe.ok) return false;
+                const probeText = await probe.text();
+                if (!looksLikeBase64(probeText)) return false;
+            } catch (e) {
+                return false;
+            }
+
+            // 3) registra promises (usa cache)
+            qz.security.setCertificatePromise((resolve, reject) => {
+                if (QZ_CERT_CACHE) resolve(QZ_CERT_CACHE);
+                else reject(new Error("Certificado QZ indisponível"));
+            });
+
+            qz.security.setSignaturePromise((toSign) => (resolve, reject) => {
+                fetch(`${API_URL}/qz/sign`, {
+                    method: "POST",
+                    headers: { "Content-Type": "text/plain" },
+                    body: toSign
+                })
+                .then(r => r.text())
+                .then(sig => resolve(sig))
+                .catch(err => reject(err));
+            });
+
+            QZ_SECURITY_READY = true;
+            return true;
+        }
+
         };
 
         async function conectarQZ() {
-            if (!window.qz) throw new Error("QZ Tray não carregou.");
+            // Não quebrar o que já funciona:
+            // 1) tenta habilitar assinatura (remove popup) se backend/cert estiverem prontos
+            // 2) se falhar, segue imprimindo em modo anônimo (com popup), como antes
+            await waitForQZ();
+            try {
+                await tryEnableQZSecurity();
+            } catch (e) {
+                // silencioso
+            }
+
             if (!qz.websocket.isActive()) {
                 await qz.websocket.connect();
             }
