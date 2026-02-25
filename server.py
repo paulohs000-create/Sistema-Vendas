@@ -28,10 +28,16 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
 # -----------------------------------------------------------------------------
 def _qz_private_key_pem() -> str | None:
     # chave PEM armazenada no Railway Variables
-    return os.environ.get("QZ_PRIVATE_KEY_PEM") or os.environ.get("QZ_PRIVATE_KEY")
+    pem = os.environ.get("QZ_PRIVATE_KEY_PEM") or os.environ.get("QZ_PRIVATE_KEY")
+    if not pem:
+        return None
+    # aceita formato com quebras escapadas (\n) comum em variáveis de ambiente
+    if "\\n" in pem:
+        pem = pem.replace("\\n", "\n")
+    return pem
 
-def _qz_sign_payload(payload: str) -> str:
-    """Assina o payload vindo do QZ e retorna BASE64 (texto puro)."""
+def _qz_sign_payload(payload: bytes) -> str:
+    """Assina os bytes do payload vindo do QZ e retorna BASE64 (texto puro)."""
     pem = _qz_private_key_pem()
     if not pem:
         raise RuntimeError("QZ_PRIVATE_KEY_PEM não configurada.")
@@ -43,6 +49,16 @@ def _qz_sign_payload(payload: str) -> str:
 
     alg = (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip()
     digest = hashes.SHA256() if alg in ("sha256", "sha-256") else hashes.SHA1()
+<<<<<<< codex/imprimir-erro-r5szg5
+
+    private_key = serialization.load_pem_private_key(
+        pem.encode("utf-8"),
+        password=None,
+    )
+
+    sig = private_key.sign(
+        payload,
+=======
 
     private_key = serialization.load_pem_private_key(
         pem.encode("utf-8"),
@@ -51,6 +67,7 @@ def _qz_sign_payload(payload: str) -> str:
 
     sig = private_key.sign(
         payload.encode("utf-8"),
+>>>>>>> main
         padding.PKCS1v15(),
         digest,
     )
@@ -71,7 +88,7 @@ def qz_health():
 @app.post("/qz/sign")
 def qz_sign():
     # QZ envia texto puro para assinar
-    payload = request.get_data(as_text=True) or ""
+    payload = request.get_data(cache=False) or b""
     try:
         return (_qz_sign_payload(payload), 200, {"Content-Type": "text/plain; charset=utf-8"})
     except Exception as e:

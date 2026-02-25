@@ -386,6 +386,21 @@ function nextDocNumber(prefix, year) {
 
             const certUrl = `${API_URL}/static/qz/certificate.pem`;
             const signUrl = `${API_URL}/qz/sign`;
+            const healthUrl = `${API_URL}/qz/health`;
+
+            try {
+                const healthResp = await fetch(healthUrl, { cache: "no-store" });
+                if (healthResp.ok) {
+                    const health = await healthResp.json();
+                    const alg = String(health?.signature_alg || "sha256").toUpperCase().replace(/[^A-Z0-9]/g, "");
+                    const allowed = ["SHA1", "SHA256", "SHA384", "SHA512"];
+                    if (allowed.includes(alg) && typeof qz.security.setSignatureAlgorithm === "function") {
+                        qz.security.setSignatureAlgorithm(alg);
+                    }
+                }
+            } catch (e) {
+                console.warn("Não foi possível obter algoritmo de assinatura do backend:", e);
+            }
 
             qz.security.setCertificatePromise((resolve, reject) => {
                 fetch(certUrl, { cache: "no-store" })
