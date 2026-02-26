@@ -1330,6 +1330,7 @@ def controle_caixa_export():
 
 
 
+
 @app.get("/exportacoes-caixa/detalhado")
 @login_required(["admin"])
 @handle_errors
@@ -1343,6 +1344,8 @@ def exportacoes_caixa_detalhado():
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
+            # 1 linha por pedido com agregação dos serviços (nome + qty + desc)
+            # Observação: evitamos ordenar por colunas que podem não existir (ex: id_pedido_service)
             cur.execute(
                 """
                 SELECT
@@ -1357,7 +1360,7 @@ def exportacoes_caixa_detalhado():
                       (s.name || ' x' || COALESCE(ps.quantity,1)::text ||
                         CASE WHEN ps.description IS NOT NULL AND ps.description <> '' THEN ' (' || ps.description || ')' ELSE '' END
                       ),
-                      ' | ' ORDER BY ps.id_pedido_service
+                      ' | ' ORDER BY s.name
                     ),
                     ''
                   ) AS servicos,
@@ -1368,8 +1371,8 @@ def exportacoes_caixa_detalhado():
                 LEFT JOIN services s ON s.id_service = ps.id_service
                 WHERE p.data_entrada::date >= %s
                   AND p.data_entrada::date < %s
-                GROUP BY p.data_entrada::date, c.name, nif, p.preco_total
-                ORDER BY p.data_entrada::date ASC, MIN(p.id_pedido) ASC
+                GROUP BY p.data_entrada::date, c.name, c.nif, p.include_nif, p.preco_total
+                ORDER BY p.data_entrada::date ASC, p.id_pedido ASC
                 """,
                 (start, end),
             )
