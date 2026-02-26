@@ -1,6 +1,7 @@
 import os
 import base64
 import csv
+from decimal import Decimal, ROUND_HALF_UP
 import io
 from datetime import date, datetime, timedelta
 from functools import wraps
@@ -1399,8 +1400,8 @@ def exportacoes_caixa_detalhado():
     writer.writerow(["dia", "nome", "nif", "cartao", "servicos", "valor_total_eur", "iva_23"])
 
     for r in rows:
-        total = float(r.get("preco_total") or 0)
-        iva = round(total - (total / 1.23), 2)
+        total = Decimal(str(r.get("preco_total") or 0))
+        iva = (total - (total / Decimal("1.23"))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
         writer.writerow(
             [
@@ -1413,6 +1414,8 @@ def exportacoes_caixa_detalhado():
                 f"{iva:.2f} €",
             ]
         )
+
+
 
     csv_data = output.getvalue().encode("utf-8-sig")
     filename = f"export_caixa_detalhado_{month}.csv"
