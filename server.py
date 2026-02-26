@@ -1331,6 +1331,7 @@ def controle_caixa_export():
 
 
 
+
 @app.get("/exportacoes-caixa/detalhado")
 @login_required(["admin"])
 @handle_errors
@@ -1357,6 +1358,7 @@ def exportacoes_caixa_detalhado():
                         THEN c.nif
                         ELSE ''
                     END AS nif,
+                    p.paid_by_card,
                     STRING_AGG(
                         s.name || ' x' || COALESCE(ps.quantity,1)::text ||
                         CASE
@@ -1381,6 +1383,7 @@ def exportacoes_caixa_detalhado():
                     c.name,
                     c.nif,
                     p.include_nif,
+                    p.paid_by_card,
                     p.preco_total
                 ORDER BY
                     p.data_entrada::date ASC,
@@ -1392,7 +1395,7 @@ def exportacoes_caixa_detalhado():
 
     output = io.StringIO()
     writer = csv.writer(output, delimiter=";")
-    writer.writerow(["dia", "nome", "nif", "servicos", "valor_total"])
+    writer.writerow(["dia", "nome", "nif", "cartao", "servicos", "valor_total"])
 
     for r in rows:
         writer.writerow(
@@ -1400,6 +1403,7 @@ def exportacoes_caixa_detalhado():
                 r.get("dia").strftime("%Y-%m-%d") if r.get("dia") else "",
                 r.get("nome") or "",
                 r.get("nif") or "",
+                "1" if r.get("paid_by_card") else "0",
                 r.get("servicos") or "",
                 f"{float(r.get('preco_total') or 0):.2f}".replace(".", ","),
             ]
