@@ -1332,6 +1332,7 @@ def controle_caixa_export():
 
 
 
+
 @app.get("/exportacoes-caixa/detalhado")
 @login_required(["admin"])
 @handle_errors
@@ -1395,9 +1396,12 @@ def exportacoes_caixa_detalhado():
 
     output = io.StringIO()
     writer = csv.writer(output, delimiter=";")
-    writer.writerow(["dia", "nome", "nif", "cartao", "servicos", "valor_total"])
+    writer.writerow(["dia", "nome", "nif", "cartao", "servicos", "valor_total_eur", "iva_23"])
 
     for r in rows:
+        total = float(r.get("preco_total") or 0)
+        iva = round(total - (total / 1.23), 2)
+
         writer.writerow(
             [
                 r.get("dia").strftime("%Y-%m-%d") if r.get("dia") else "",
@@ -1405,7 +1409,8 @@ def exportacoes_caixa_detalhado():
                 r.get("nif") or "",
                 "1" if r.get("paid_by_card") else "0",
                 r.get("servicos") or "",
-                f"{float(r.get('preco_total') or 0):.2f}".replace(".", ","),
+                f"{total:.2f} €",
+                f"{iva:.2f} €",
             ]
         )
 
