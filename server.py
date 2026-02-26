@@ -251,13 +251,12 @@ LOGIN_HTML = """
 # -----------------------------------------------------------------------------
 # Admin dashboard (inline)
 # -----------------------------------------------------------------------------
-ADMIN_HTML = """
-<!DOCTYPE html>
+ADMIN_HTML = """<!DOCTYPE html>
 <html lang="pt-PT">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Painel Admin</title>
+  <title>Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="min-h-screen bg-[#0b1220] text-white">
@@ -301,14 +300,6 @@ ADMIN_HTML = """
           📤 <span class="ml-2">Exportações Caixa</span>
           <div class="text-xs text-white/60 ml-6">CSV mensal detalhado</div>
         </a>
-
-
-        <div class="mt-6 pt-4 border-t border-white/10 text-white/50 text-sm">
-          <div>Usuários (em breve)</div>
-          <div class="text-xs">Criar/editar/remover</div>
-          <div class="mt-3">Relatórios (em breve)</div>
-          <div class="text-xs">Vendas e produtividade</div>
-        </div>
       </nav>
 
       <div class="mt-6">
@@ -319,161 +310,182 @@ ADMIN_HTML = """
     </aside>
 
     <main class="flex-1 p-8">
-      <div class="flex items-center justify-between">
+      <div class="flex items-start justify-between gap-4">
         <div>
-          <h1 class="text-3xl font-bold">Dashboard</h1>
-          <p class="text-white/60 mt-1">Aqui vamos centralizar tudo do admin.</p>
+          <h1 class="text-4xl font-bold">Dashboard</h1>
+          <p class="text-white/60 mt-1">Resumo de vendas (OT + FR) e faturação com IVA (Somente FR).</p>
         </div>
         <div class="text-white/70 text-sm">
           Logado como: <span class="font-semibold text-white">{{ user }}</span>
         </div>
       </div>
 
-      <!-- KPIs -->
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-8">
-        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-white/60 text-sm">Pendentes hoje</div>
-          <div id="kpi-pendentes-hoje" class="text-3xl font-extrabold mt-1">—</div>
-        </div>
-        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-white/60 text-sm">Concluídos hoje</div>
-          <div id="kpi-concluidos-hoje" class="text-3xl font-extrabold mt-1">—</div>
-        </div>
-        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-white/60 text-sm">Atrasados</div>
-          <div id="kpi-atrasados" class="text-3xl font-extrabold mt-1">—</div>
-        </div>
-
-        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-white/60 text-sm">Pedidos criados hoje</div>
-          <div id="kpi-pedidos-hoje" class="text-3xl font-extrabold mt-1">—</div>
-        </div>
-        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-white/60 text-sm">Faturamento hoje</div>
-          <div id="kpi-fat-hoje" class="text-3xl font-extrabold mt-1">—</div>
-        </div>
-        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-white/60 text-sm">Faturamento mês</div>
-          <div id="kpi-fat-mes" class="text-3xl font-extrabold mt-1">—</div>
+      <!-- Filtro por data -->
+      <div class="mt-6 p-5 rounded-2xl bg-white/5 border border-white/10">
+        <div class="flex flex-col md:flex-row md:items-center gap-3">
+          <div class="flex-1">
+            <div class="text-sm text-white/70 mb-1">Buscar por data</div>
+            <input id="day" type="date" value="{{ day }}" class="w-full md:w-72 px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-white"/>
+          </div>
+          <div class="pt-5 md:pt-0">
+            <button id="btnApplyDay" class="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 font-semibold">
+              Buscar
+            </button>
+          </div>
+          <div class="text-xs text-white/50 md:ml-auto">
+            Dica: selecione um dia para ver “Vendas Hoje” daquele dia.
+          </div>
         </div>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
-        <a href="/gerenciamento" class="p-5 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition">
-          <div class="font-bold text-lg">Gerenciamento</div>
-          <div class="text-white/60 text-sm mt-1">Cadastrar/editar serviços e costureiras</div>
-        </a>
-
-        <a href="/" class="p-5 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition">
-          <div class="font-bold text-lg">Atendimento</div>
-          <div class="text-white/60 text-sm mt-1">Criar pedidos e imprimir talão</div>
-        </a>
-
-        <a href="/costureiras" class="p-5 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition">
-          <div class="font-bold text-lg">Painel Costureiras</div>
-          <div class="text-white/60 text-sm mt-1">Acompanhar pendências e conclusões</div>
-        </a>
-      </div>
-
-      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4 mt-6">
+      <!-- Cards -->
+      <div class="mt-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
-          <div class="font-bold text-lg">Atrasados</div>
-          <div class="text-white/60 text-sm mt-1">Top 10</div>
-          <div id="list-atrasados" class="mt-4 space-y-3 text-sm text-white/80">Carregando...</div>
+          <div class="text-sm text-white/60">Vendas Hoje</div>
+          <div id="salesDayAll" class="text-3xl font-bold mt-2">—</div>
+          <div class="text-xs text-white/50 mt-1">OT + FR</div>
         </div>
 
         <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
-          <div class="font-bold text-lg">Próximos 7 dias</div>
-          <div class="text-white/60 text-sm mt-1">Top 10</div>
-          <div id="list-proximos" class="mt-4 space-y-3 text-sm text-white/80">Carregando...</div>
+          <div class="text-sm text-white/60">Vendas Hoje (com IVA)</div>
+          <div id="salesDayFR" class="text-3xl font-bold mt-2 text-emerald-300">—</div>
+          <div class="text-xs text-white/50 mt-1">Somente FR</div>
         </div>
 
         <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
-          <div class="font-bold text-lg">Últimos pedidos</div>
-          <div class="text-white/60 text-sm mt-1">Top 10</div>
-          <div id="list-ultimos" class="mt-4 space-y-3 text-sm text-white/80">Carregando...</div>
+          <div class="text-sm text-white/60">Vendas do Mês</div>
+          <div id="salesMonthAll" class="text-3xl font-bold mt-2">—</div>
+          <div class="text-xs text-white/50 mt-1">OT + FR</div>
+        </div>
+
+        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
+          <div class="text-sm text-white/60">Vendas do Mês (com IVA)</div>
+          <div id="salesMonthFR" class="text-3xl font-bold mt-2 text-emerald-300">—</div>
+          <div class="text-xs text-white/50 mt-1">Somente FR</div>
         </div>
       </div>
 
-      <div class="mt-6 p-6 rounded-2xl bg-white/5 border border-white/10">
-        <div class="font-bold text-lg">Próximos passos</div>
-        <ul class="list-disc ml-6 mt-2 text-white/70 text-sm space-y-1">
-          <li>Gestão de usuários (admin cria caixa/costureira, reseta senha, desativa)</li>
-          <li>Relatórios e exportação</li>
-        </ul>
+      <!-- Comparação mês atual vs mês anterior -->
+      <div class="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="text-lg font-bold">Comparação do Mês (OT + FR)</div>
+              <div class="text-sm text-white/60">Mês atual vs mês anterior</div>
+            </div>
+            <div id="pctAll" class="text-lg font-bold">—</div>
+          </div>
+
+          <div class="mt-4">
+            <div class="text-xs text-white/50">Mês anterior</div>
+            <div class="h-3 rounded-full bg-white/10 overflow-hidden">
+              <div id="barPrevAll" class="h-full bg-white/30 w-0"></div>
+            </div>
+            <div id="prevAll" class="text-sm mt-1 text-white/70">—</div>
+          </div>
+
+          <div class="mt-4">
+            <div class="text-xs text-white/50">Mês atual</div>
+            <div class="h-3 rounded-full bg-white/10 overflow-hidden">
+              <div id="barCurAll" class="h-full bg-purple-500/70 w-0"></div>
+            </div>
+            <div id="curAll" class="text-sm mt-1 text-white/70">—</div>
+          </div>
+        </div>
+
+        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="text-lg font-bold">Comparação do Mês (Somente FR)</div>
+              <div class="text-sm text-white/60">Mês atual vs mês anterior</div>
+            </div>
+            <div id="pctFR" class="text-lg font-bold">—</div>
+          </div>
+
+          <div class="mt-4">
+            <div class="text-xs text-white/50">Mês anterior</div>
+            <div class="h-3 rounded-full bg-white/10 overflow-hidden">
+              <div id="barPrevFR" class="h-full bg-white/30 w-0"></div>
+            </div>
+            <div id="prevFR" class="text-sm mt-1 text-white/70">—</div>
+          </div>
+
+          <div class="mt-4">
+            <div class="text-xs text-white/50">Mês atual</div>
+            <div class="h-3 rounded-full bg-white/10 overflow-hidden">
+              <div id="barCurFR" class="h-full bg-emerald-500/70 w-0"></div>
+            </div>
+            <div id="curFR" class="text-sm mt-1 text-white/70">—</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-6 text-xs text-white/40">
+        Sugestões futuras: gráfico diário do mês (linha), split Cartão x Dinheiro, e top 5 serviços.
       </div>
     </main>
   </div>
 
 <script>
   function eur(v){
-    if (v === null || v === undefined) return "—";
-    try {
-      return new Intl.NumberFormat('pt-PT', { style: 'currency', currency: 'EUR' }).format(Number(v));
-    } catch(e) {
-      return "€ " + v;
-    }
-  }
-
-  function itemLinhaPedido(p){
-    const dt = p.data_prevista ? String(p.data_prevista) : "—";
-    const total = (p.preco_total !== null && p.preco_total !== undefined) ? eur(p.preco_total) : "—";
-    const pend = (p.pendentes !== null && p.pendentes !== undefined) ? `${p.pendentes} pend.` : "";
-    return `
-      <div class="p-3 rounded-xl bg-white/5 border border-white/10">
-        <div class="flex items-center justify-between">
-          <div class="font-semibold">#${p.id_pedido} — ${p.client_name || ""}</div>
-          <div class="text-white/60">${dt}</div>
-        </div>
-        <div class="flex items-center justify-between mt-1 text-white/70">
-          <div>${pend}</div>
-          <div class="font-semibold">${total}</div>
-        </div>
-      </div>
-    `;
-  }
-
-  async function loadAdminStats(){
     try{
-      const r = await fetch("/admin/stats", { credentials: "same-origin" });
-      if(!r.ok){
-        throw new Error("Falha ao carregar stats: HTTP " + r.status);
-      }
-      const data = await r.json();
-
-      document.getElementById("kpi-pendentes-hoje").textContent = data.kpis.pending_today ?? "—";
-      document.getElementById("kpi-concluidos-hoje").textContent = data.kpis.completed_today ?? "—";
-      document.getElementById("kpi-atrasados").textContent = data.kpis.overdue ?? "—";
-      document.getElementById("kpi-pedidos-hoje").textContent = data.kpis.orders_today ?? "—";
-      document.getElementById("kpi-fat-hoje").textContent = eur(data.kpis.revenue_today);
-      document.getElementById("kpi-fat-mes").textContent = eur(data.kpis.revenue_month);
-
-      const atrasados = data.lists.overdue || [];
-      const proximos = data.lists.next7 || [];
-      const ultimos = data.lists.latest || [];
-
-      const elA = document.getElementById("list-atrasados");
-      elA.innerHTML = atrasados.length ? atrasados.map(itemLinhaPedido).join("") : '<div class="text-white/60">Nenhum.</div>';
-
-      const elP = document.getElementById("list-proximos");
-      elP.innerHTML = proximos.length ? proximos.map(itemLinhaPedido).join("") : '<div class="text-white/60">Nenhum.</div>';
-
-      const elU = document.getElementById("list-ultimos");
-      elU.innerHTML = ultimos.length ? ultimos.map(itemLinhaPedido).join("") : '<div class="text-white/60">Nenhum.</div>';
-
-    }catch(e){
-      console.error(e);
-      document.getElementById("list-atrasados").innerHTML = '<div class="text-red-300">Erro ao carregar.</div>';
-      document.getElementById("list-proximos").innerHTML = '<div class="text-red-300">Erro ao carregar.</div>';
-      document.getElementById("list-ultimos").innerHTML = '<div class="text-red-300">Erro ao carregar.</div>';
-    }
+      const n = Number(v || 0);
+      return n.toLocaleString('pt-PT', { style:'currency', currency:'EUR' });
+    }catch(e){ return '0,00 €'; }
   }
 
-  loadAdminStats();
+  function setBar(el, cur, max){
+    const pct = max <= 0 ? 0 : Math.round((cur / max) * 100);
+    el.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  }
+
+  async function loadStats(){
+    const day = document.getElementById('day')?.value || '';
+    const resp = await fetch(`/admin/stats?day=${encodeURIComponent(day)}`);
+    const data = await resp.json();
+
+    document.getElementById('salesDayAll').textContent = eur(data.sales_day_all);
+    document.getElementById('salesDayFR').textContent  = eur(data.sales_day_fr);
+    document.getElementById('salesMonthAll').textContent = eur(data.sales_month_all);
+    document.getElementById('salesMonthFR').textContent  = eur(data.sales_month_fr);
+
+    document.getElementById('prevAll').textContent = `Mês anterior: ${eur(data.sales_prev_month_all)}`;
+    document.getElementById('curAll').textContent  = `Mês atual: ${eur(data.sales_month_all)}`;
+
+    document.getElementById('prevFR').textContent = `Mês anterior: ${eur(data.sales_prev_month_fr)}`;
+    document.getElementById('curFR').textContent  = `Mês atual: ${eur(data.sales_month_fr)}`;
+
+    const pctAll = Number(data.pct_month_all || 0);
+    const pctFR  = Number(data.pct_month_fr || 0);
+
+    const pctAllEl = document.getElementById('pctAll');
+    const pctFREl  = document.getElementById('pctFR');
+
+    pctAllEl.textContent = (pctAll >= 0 ? '▲ ' : '▼ ') + Math.abs(pctAll).toFixed(1) + '%';
+    pctAllEl.className = 'text-lg font-bold ' + (pctAll >= 0 ? 'text-emerald-300' : 'text-red-300');
+
+    pctFREl.textContent = (pctFR >= 0 ? '▲ ' : '▼ ') + Math.abs(pctFR).toFixed(1) + '%';
+    pctFREl.className = 'text-lg font-bold ' + (pctFR >= 0 ? 'text-emerald-300' : 'text-red-300');
+
+    const maxAll = Math.max(Number(data.sales_prev_month_all||0), Number(data.sales_month_all||0));
+    const maxFR  = Math.max(Number(data.sales_prev_month_fr||0), Number(data.sales_month_fr||0));
+
+    setBar(document.getElementById('barPrevAll'), Number(data.sales_prev_month_all||0), maxAll);
+    setBar(document.getElementById('barCurAll'),  Number(data.sales_month_all||0), maxAll);
+
+    setBar(document.getElementById('barPrevFR'), Number(data.sales_prev_month_fr||0), maxFR);
+    setBar(document.getElementById('barCurFR'),  Number(data.sales_month_fr||0), maxFR);
+  }
+
+  document.getElementById('btnApplyDay')?.addEventListener('click', () => {
+    const day = document.getElementById('day')?.value || '';
+    window.location.href = `/admin?day=${encodeURIComponent(day)}`;
+  });
+
+  loadStats();
 </script>
 </body>
-</html>
-"""
+</html>"""
 
 # -----------------------------------------------------------------------------
 # Controle de Caixa (Admin)
@@ -971,19 +983,52 @@ def logout():
 @app.get("/admin")
 @login_required(["admin"])
 def admin_dashboard():
-    return render_template_string(ADMIN_HTML, user=session.get("user"))
+    day_str = (request.args.get("day") or "").strip()
+    if day_str:
+        try:
+            day = datetime.strptime(day_str, "%Y-%m-%d").date()
+        except Exception:
+            day = date.today()
+    else:
+        day = date.today()
+
+    return render_template_string(ADMIN_HTML, user=session.get("user"), day=day.strftime("%Y-%m-%d"))
 
 
 @app.get("/admin/stats")
 @login_required(["admin"])
 @handle_errors
 def admin_stats():
-    today = date.today()
-    start_month = today.replace(day=1)
-    next7 = today + timedelta(days=7)
+    # Permite filtrar por dia (YYYY-MM-DD)
+    day_str = (request.args.get("day") or "").strip()
+    if day_str:
+        try:
+            day = datetime.strptime(day_str, "%Y-%m-%d").date()
+        except Exception:
+            day = date.today()
+    else:
+        day = date.today()
+
+    start_month = day.replace(day=1)
+
+    # Próximo mês (para fechar o intervalo [start_month, next_month))
+    if start_month.month == 12:
+        next_month = date(start_month.year + 1, 1, 1)
+    else:
+        next_month = date(start_month.year, start_month.month + 1, 1)
+
+    # Mês anterior
+    if start_month.month == 1:
+        prev_month_start = date(start_month.year - 1, 12, 1)
+    else:
+        prev_month_start = date(start_month.year, start_month.month - 1, 1)
+    prev_month_end = start_month  # exclusivo
+
+    next7 = day + timedelta(days=7)
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
+            # Indicadores operacionais (mantidos para outras telas/uso futuro)
             cur.execute(
                 """
                 SELECT COUNT(*)::int AS c
@@ -992,7 +1037,7 @@ def admin_stats():
                 WHERE p.data_prevista = %s
                   AND COALESCE(ps.status,'') <> 'Concluído'
                 """,
-                (today,),
+                (day,),
             )
             pending_today = cur.fetchone()["c"]
 
@@ -1003,7 +1048,7 @@ def admin_stats():
                 WHERE status = 'Concluído'
                   AND data_conclusao::date = %s
                 """,
-                (today,),
+                (day,),
             )
             completed_today = cur.fetchone()["c"]
 
@@ -1015,7 +1060,7 @@ def admin_stats():
                 WHERE p.data_prevista < %s
                   AND COALESCE(ps.status,'') <> 'Concluído'
                 """,
-                (today,),
+                (day,),
             )
             overdue = cur.fetchone()["c"]
 
@@ -1025,192 +1070,104 @@ def admin_stats():
                 FROM pedidos
                 WHERE data_entrada::date = %s
                 """,
-                (today,),
+                (day,),
             )
             orders_today = cur.fetchone()["c"]
 
+            # Vendas (OT+FR) e "Somente FR" (include_nif=true)
             cur.execute(
                 """
-                SELECT COALESCE(SUM(preco_total),0)::float AS v
+                SELECT COALESCE(SUM(preco_total),0)::numeric AS v
                 FROM pedidos
                 WHERE data_entrada::date = %s
                 """,
-                (today,),
+                (day,),
             )
-            revenue_today = float(cur.fetchone()["v"] or 0)
+            sales_day_all = float(cur.fetchone()["v"] or 0)
 
             cur.execute(
                 """
-                SELECT COALESCE(SUM(preco_total),0)::float AS v
+                SELECT COALESCE(SUM(preco_total),0)::numeric AS v
+                FROM pedidos
+                WHERE data_entrada::date = %s
+                  AND include_nif = true
+                """,
+                (day,),
+            )
+            sales_day_fr = float(cur.fetchone()["v"] or 0)
+
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(preco_total),0)::numeric AS v
                 FROM pedidos
                 WHERE data_entrada::date >= %s
-                  AND data_entrada::date <= %s
+                  AND data_entrada::date < %s
                 """,
-                (start_month, today),
+                (start_month, next_month),
             )
-            revenue_month = float(cur.fetchone()["v"] or 0)
+            sales_month_all = float(cur.fetchone()["v"] or 0)
 
             cur.execute(
                 """
-                SELECT
-                  p.id_pedido,
-                  c.name AS client_name,
-                  p.data_prevista,
-                  p.preco_total,
-                  (
-                    SELECT COUNT(*)::int
-                    FROM pedido_servicos ps2
-                    WHERE ps2.id_pedido = p.id_pedido
-                      AND COALESCE(ps2.status,'') <> 'Concluído'
-                  ) AS pendentes
-                FROM pedidos p
-                JOIN clients c ON c.id_client = p.id_client
-                WHERE p.data_prevista < %s
-                  AND COALESCE(p.status,'') <> 'Concluído'
-                ORDER BY p.data_prevista ASC, p.id_pedido ASC
-                LIMIT 10
+                SELECT COALESCE(SUM(preco_total),0)::numeric AS v
+                FROM pedidos
+                WHERE data_entrada::date >= %s
+                  AND data_entrada::date < %s
+                  AND include_nif = true
                 """,
-                (today,),
+                (start_month, next_month),
             )
-            list_overdue = cur.fetchall()
+            sales_month_fr = float(cur.fetchone()["v"] or 0)
+
+            # Mês anterior (comparação)
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(preco_total),0)::numeric AS v
+                FROM pedidos
+                WHERE data_entrada::date >= %s
+                  AND data_entrada::date < %s
+                """,
+                (prev_month_start, prev_month_end),
+            )
+            sales_prev_month_all = float(cur.fetchone()["v"] or 0)
 
             cur.execute(
                 """
-                SELECT
-                  p.id_pedido,
-                  c.name AS client_name,
-                  p.data_prevista,
-                  p.preco_total,
-                  (
-                    SELECT COUNT(*)::int
-                    FROM pedido_servicos ps2
-                    WHERE ps2.id_pedido = p.id_pedido
-                      AND COALESCE(ps2.status,'') <> 'Concluído'
-                  ) AS pendentes
-                FROM pedidos p
-                JOIN clients c ON c.id_client = p.id_client
-                WHERE p.data_prevista >= %s
-                  AND p.data_prevista <= %s
-                  AND COALESCE(p.status,'') <> 'Concluído'
-                ORDER BY p.data_prevista ASC, p.id_pedido ASC
-                LIMIT 10
+                SELECT COALESCE(SUM(preco_total),0)::numeric AS v
+                FROM pedidos
+                WHERE data_entrada::date >= %s
+                  AND data_entrada::date < %s
+                  AND include_nif = true
                 """,
-                (today, next7),
+                (prev_month_start, prev_month_end),
             )
-            list_next7 = cur.fetchall()
+            sales_prev_month_fr = float(cur.fetchone()["v"] or 0)
 
-            cur.execute(
-                """
-                SELECT
-                  p.id_pedido,
-                  c.name AS client_name,
-                  p.data_prevista,
-                  p.preco_total,
-                  (
-                    SELECT COUNT(*)::int
-                    FROM pedido_servicos ps2
-                    WHERE ps2.id_pedido = p.id_pedido
-                      AND COALESCE(ps2.status,'') <> 'Concluído'
-                  ) AS pendentes
-                FROM pedidos p
-                JOIN clients c ON c.id_client = p.id_client
-                ORDER BY p.id_pedido DESC
-                LIMIT 10
-                """
-            )
-            list_latest = cur.fetchall()
+    def pct_change(cur_v: float, prev_v: float) -> float:
+        if prev_v == 0:
+            return 0.0 if cur_v == 0 else 100.0
+        return ((cur_v - prev_v) / prev_v) * 100.0
 
-    def _pedido_list_row(r: dict) -> dict:
-        dp = r.get("data_prevista")
-        dp_str = dp.strftime("%Y-%m-%d") if isinstance(dp, (date, datetime)) else None
-        return {
-            "id_pedido": r.get("id_pedido"),
-            "client_name": r.get("client_name"),
-            "data_prevista": dp_str,
-            "preco_total": float(r.get("preco_total") or 0) if r.get("preco_total") is not None else None,
-            "pendentes": r.get("pendentes"),
+    return jsonify(
+        {
+            "day": day.strftime("%Y-%m-%d"),
+            "month": start_month.strftime("%Y-%m"),
+            "pending_today": pending_today,
+            "completed_today": completed_today,
+            "overdue": overdue,
+            "orders_today": orders_today,
+
+            "sales_day_all": sales_day_all,
+            "sales_day_fr": sales_day_fr,
+            "sales_month_all": sales_month_all,
+            "sales_month_fr": sales_month_fr,
+            "sales_prev_month_all": sales_prev_month_all,
+            "sales_prev_month_fr": sales_prev_month_fr,
+            "pct_month_all": pct_change(sales_month_all, sales_prev_month_all),
+            "pct_month_fr": pct_change(sales_month_fr, sales_prev_month_fr),
         }
+    ), 200
 
-    return (
-        jsonify(
-            {
-                "kpis": {
-                    "pending_today": pending_today,
-                    "completed_today": completed_today,
-                    "overdue": overdue,
-                    "orders_today": orders_today,
-                    "revenue_today": revenue_today,
-                    "revenue_month": revenue_month,
-                },
-                "lists": {
-                    "overdue": [_pedido_list_row(x) for x in list_overdue],
-                    "next7": [_pedido_list_row(x) for x in list_next7],
-                    "latest": [_pedido_list_row(x) for x in list_latest],
-                },
-            }
-        ),
-        200,
-    )
-
-
-@app.get("/")
-@login_required(["admin", "caixa"])
-@handle_errors
-def serve_main_page():
-    return render_template("atendimento.html", user=session.get("user"), role=session.get("role"))
-
-
-@app.get("/gerenciamento")
-@login_required(["admin"])
-@handle_errors
-def serve_management_page():
-    return render_template("Gerenciamento.html")
-
-
-@app.get("/costureiras")
-@login_required(["admin", "costureira"])
-@handle_errors
-def serve_seamstress_page():
-    return render_template("costureiras.html")
-
-
-# -----------------------------------------------------------------------------
-# APIs do Painel Costureiras
-# -----------------------------------------------------------------------------
-@app.get("/pedidos/stats")
-@login_required(["admin", "costureira"])
-@handle_errors
-def pedidos_stats():
-    today = date.today()
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            # pendentes com entrega hoje
-            cur.execute(
-                """
-                SELECT COUNT(*)::int AS c
-                FROM pedido_servicos ps
-                JOIN pedidos p ON p.id_pedido = ps.id_pedido
-                WHERE p.data_prevista = %s
-                  AND COALESCE(ps.status,'') <> 'Concluído'
-                """,
-                (today,),
-            )
-            pending_today = cur.fetchone()["c"]
-
-            # concluídos hoje (pela data de conclusão)
-            cur.execute(
-                """
-                SELECT COUNT(*)::int AS c
-                FROM pedido_servicos
-                WHERE status = 'Concluído'
-                  AND data_conclusao::date = %s
-                """,
-                (today,),
-            )
-            completed_today = cur.fetchone()["c"]
-
-    return jsonify({"pending_today": pending_today, "completed_today": completed_today}), 200
 
 @app.get("/pedidos/pendentes")
 @login_required(["admin", "costureira"])
