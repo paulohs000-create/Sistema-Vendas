@@ -1169,6 +1169,65 @@ def admin_stats():
     ), 200
 
 
+@app.get("/")
+@login_required(["admin", "caixa"])
+@handle_errors
+def serve_main_page():
+    return render_template("atendimento.html", user=session.get("user"), role=session.get("role"))
+
+
+@app.get("/gerenciamento")
+@login_required(["admin"])
+@handle_errors
+def serve_management_page():
+    return render_template("Gerenciamento.html")
+
+
+@app.get("/costureiras")
+@login_required(["admin", "costureira"])
+@handle_errors
+def serve_seamstress_page():
+    return render_template("costureiras.html")
+
+
+# -----------------------------------------------------------------------------
+# APIs do Painel Costureiras
+# -----------------------------------------------------------------------------
+@app.get("/pedidos/stats")
+@login_required(["admin", "costureira"])
+@handle_errors
+def pedidos_stats():
+    today = date.today()
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # pendentes com entrega hoje
+            cur.execute(
+                """
+                SELECT COUNT(*)::int AS c
+                FROM pedido_servicos ps
+                JOIN pedidos p ON p.id_pedido = ps.id_pedido
+                WHERE p.data_prevista = %s
+                  AND COALESCE(ps.status,'') <> 'Concluído'
+                """,
+                (today,),
+            )
+            pending_today = cur.fetchone()["c"]
+
+            # concluídos hoje (pela data de conclusão)
+            cur.execute(
+                """
+                SELECT COUNT(*)::int AS c
+                FROM pedido_servicos
+                WHERE status = 'Concluído'
+                  AND data_conclusao::date = %s
+                """,
+                (today,),
+            )
+            completed_today = cur.fetchone()["c"]
+
+    return jsonify({"pending_today": pending_today, "completed_today": completed_today}), 200
+
 @app.get("/pedidos/pendentes")
 @login_required(["admin", "costureira"])
 @handle_errors
