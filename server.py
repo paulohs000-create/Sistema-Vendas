@@ -296,6 +296,12 @@ ADMIN_HTML = """
           <div class="text-xs text-white/60 ml-6">Cartão, NIF e exportação</div>
         </a>
 
+        <a href="/exportacoes-caixa" class="block px-3 py-2 rounded-xl hover:bg-white/10">
+          📤 <span class="ml-2">Exportações Caixa</span>
+          <div class="text-xs text-white/60 ml-6">CSV mensal detalhado</div>
+        </a>
+
+
         <div class="mt-6 pt-4 border-t border-white/10 text-white/50 text-sm">
           <div>Usuários (em breve)</div>
           <div class="text-xs">Criar/editar/remover</div>
@@ -516,6 +522,12 @@ CONTROLE_CAIXA_HTML = """
           💳 <span class="ml-2">Controle de Caixa</span>
           <div class="text-xs text-white/60 ml-6">Cartão, NIF e exportação</div>
         </a>
+
+        <a href="/exportacoes-caixa" class="block px-3 py-2 rounded-xl hover:bg-white/10">
+          📤 <span class="ml-2">Exportações Caixa</span>
+          <div class="text-xs text-white/60 ml-6">CSV mensal detalhado</div>
+        </a>
+
       </nav>
 
       <div class="mt-6">
@@ -733,6 +745,137 @@ CONTROLE_CAIXA_HTML = """
   });
 
   loadDay();
+</script>
+</body>
+</html>
+"""
+
+
+# -----------------------------------------------------------------------------
+# Exportações de Caixa (Admin)
+# -----------------------------------------------------------------------------
+EXPORTACOES_CAIXA_HTML = """
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Exportações Caixa</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-[#0b1220] text-white">
+  <div class="flex min-h-screen">
+    <aside class="w-72 bg-[#0a1020] border-r border-white/10 p-4">
+      <div class="flex items-center gap-3 mb-6">
+        <div class="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center font-bold">SV</div>
+        <div>
+          <div class="font-bold leading-5">Sistema-Vendas</div>
+          <div class="text-xs text-white/60">Painel Admin</div>
+        </div>
+      </div>
+
+      <nav class="space-y-2">
+        <a href="/admin" class="block px-3 py-2 rounded-xl hover:bg-white/10">
+          🏠 <span class="ml-2">Dashboard</span>
+          <div class="text-xs text-white/60 ml-6">Resumo do sistema</div>
+        </a>
+
+        <a href="/" class="block px-3 py-2 rounded-xl hover:bg-white/10">
+          🧾 <span class="ml-2">Atendimento (Caixa)</span>
+          <div class="text-xs text-white/60 ml-6">Criar pedidos</div>
+        </a>
+
+        <a href="/gerenciamento" class="block px-3 py-2 rounded-xl hover:bg-white/10">
+          🧩 <span class="ml-2">Gerenciamento</span>
+          <div class="text-xs text-white/60 ml-6">Serviços e costureiras</div>
+        </a>
+
+        <a href="/costureiras" class="block px-3 py-2 rounded-xl hover:bg-white/10">
+          🧵 <span class="ml-2">Painel Costureiras</span>
+          <div class="text-xs text-white/60 ml-6">Pendências e conclusão</div>
+        </a>
+
+        <a href="/controle-caixa" class="block px-3 py-2 rounded-xl hover:bg-white/10">
+          💳 <span class="ml-2">Controle de Caixa</span>
+          <div class="text-xs text-white/60 ml-6">Cartão, NIF e exportação</div>
+        </a>
+
+        <a href="/exportacoes-caixa" class="block px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15">
+          📤 <span class="ml-2">Exportações Caixa</span>
+          <div class="text-xs text-white/60 ml-6">CSV mensal detalhado</div>
+        </a>
+      </nav>
+
+      <div class="mt-6">
+        <a href="/logout?next=/login" class="block text-center px-4 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-500/30">
+          Sair
+        </a>
+      </div>
+    </aside>
+
+    <main class="flex-1 p-8">
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <h1 class="text-3xl font-bold">Exportações Caixa</h1>
+          <p class="text-white/60 mt-1">Exportar CSV por mês (resumo ou detalhado por serviços).</p>
+        </div>
+        <div class="text-white/70 text-sm">
+          Logado como: <span class="font-semibold text-white">{{ user }}</span>
+        </div>
+      </div>
+
+      <div class="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
+          <div class="text-lg font-bold">Escolher mês</div>
+          <div class="text-sm text-white/60 mt-1">Selecione o mês e exporte o CSV.</div>
+
+          <div class="mt-4 flex items-center gap-2">
+            <input id="month" type="month" value="{{ month }}" class="px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-white w-full"/>
+          </div>
+
+          <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+            <button id="btn-resumo" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold">
+              Baixar CSV (Resumo)
+            </button>
+            <button id="btn-detalhado" class="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-semibold">
+              Baixar CSV (Detalhado)
+            </button>
+          </div>
+
+          <div class="mt-4 text-xs text-white/50 space-y-1">
+            <div><b>Resumo</b>: 1 linha por pedido (como já existe no Controle de Caixa).</div>
+            <div><b>Detalhado</b>: 1 linha por pedido com coluna “Serviços” (lista/descrição), + Dia, Nome, NIF, Total.</div>
+          </div>
+        </div>
+
+        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
+          <div class="text-lg font-bold">Campos do CSV detalhado</div>
+          <div class="mt-3 text-sm text-white/70">
+            <ul class="list-disc ml-6 space-y-1">
+              <li><b>dia</b> (data do pedido)</li>
+              <li><b>nome</b> (cliente)</li>
+              <li><b>nif</b> (apenas se “Com NIF” e cliente tiver NIF)</li>
+              <li><b>servicos</b> (descrição dos serviços do pedido)</li>
+              <li><b>valor_total</b> (total do pedido)</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+<script>
+  document.getElementById("btn-resumo")?.addEventListener("click", () => {
+    const m = document.getElementById("month")?.value;
+    if(!m) return;
+    window.location.href = `/controle-caixa/export?month=${encodeURIComponent(m)}`;
+  });
+
+  document.getElementById("btn-detalhado")?.addEventListener("click", () => {
+    const m = document.getElementById("month")?.value;
+    if(!m) return;
+    window.location.href = `/exportacoes-caixa/detalhado?month=${encodeURIComponent(m)}`;
+  });
 </script>
 </body>
 </html>
@@ -1176,6 +1319,76 @@ def controle_caixa_export():
         mimetype="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+
+@app.get("/exportacoes-caixa/detalhado")
+@login_required(["admin"])
+@handle_errors
+def exportacoes_caixa_detalhado():
+    month = (request.args.get("month") or "").strip()  # YYYY-MM
+    if not month or len(month) != 7 or "-" not in month:
+        today = date.today()
+        month = f"{today.year:04d}-{today.month:02d}"
+
+    start, end = _month_range(month)
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  to_char(p.data_entrada::date, 'YYYY-MM-DD') AS dia,
+                  c.name AS nome,
+                  CASE
+                    WHEN p.include_nif AND c.nif IS NOT NULL AND c.nif <> '' THEN c.nif
+                    ELSE ''
+                  END AS nif,
+                  COALESCE(
+                    string_agg(
+                      (s.name || ' x' || COALESCE(ps.quantity,1)::text ||
+                        CASE WHEN ps.description IS NOT NULL AND ps.description <> '' THEN ' (' || ps.description || ')' ELSE '' END
+                      ),
+                      ' | ' ORDER BY ps.id_pedido_service
+                    ),
+                    ''
+                  ) AS servicos,
+                  COALESCE(p.preco_total, 0)::float AS valor_total
+                FROM pedidos p
+                JOIN clients c ON c.id_client = p.id_client
+                LEFT JOIN pedido_servicos ps ON ps.id_pedido = p.id_pedido
+                LEFT JOIN services s ON s.id_service = ps.id_service
+                WHERE p.data_entrada::date >= %s
+                  AND p.data_entrada::date < %s
+                GROUP BY p.data_entrada::date, c.name, nif, p.preco_total
+                ORDER BY p.data_entrada::date ASC, MIN(p.id_pedido) ASC
+                """,
+                (start, end),
+            )
+            rows = cur.fetchall() or []
+
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=";")
+    writer.writerow(["dia", "nome", "nif", "servicos", "valor_total"])
+    for r in rows:
+        writer.writerow(
+            [
+                r.get("dia"),
+                r.get("nome"),
+                r.get("nif"),
+                r.get("servicos"),
+                f"{float(r.get('valor_total') or 0):.2f}".replace(".", ","),
+            ]
+        )
+
+    csv_data = output.getvalue().encode("utf-8-sig")
+    filename = f"export_caixa_detalhado_{month}.csv"
+    return Response(
+        csv_data,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
 
 
 @app.put("/pedidos/<int:pedido_id>/payment")
