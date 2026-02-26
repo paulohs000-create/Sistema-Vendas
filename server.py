@@ -1344,35 +1344,47 @@ def exportacoes_caixa_detalhado():
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            # 1 linha por pedido com agregação dos serviços (nome + qty + desc)
-            # Observação: evitamos ordenar por colunas que podem não existir (ex: id_pedido_service)
             cur.execute(
                 """
                 SELECT
-                  to_char(p.data_entrada::date, 'YYYY-MM-DD') AS dia,
-                  c.name AS nome,
-                  CASE
-                    WHEN p.include_nif AND c.nif IS NOT NULL AND c.nif <> '' THEN c.nif
-                    ELSE ''
-                  END AS nif,
-                  COALESCE(
-                    string_agg(
-                      (s.name || ' x' || COALESCE(ps.quantity,1)::text ||
-                        CASE WHEN ps.description IS NOT NULL AND ps.description <> '' THEN ' (' || ps.description || ')' ELSE '' END
-                      ),
-                      ' | ' ORDER BY s.name
-                    ),
-                    ''
-                  ) AS servicos,
-                  COALESCE(p.preco_total, 0)::float AS valor_total
+                    p.id_pedido,
+                    p.data_entrada::date AS dia,
+                    c.name AS nome,
+                    CASE
+                        WHEN p.include_nif = true
+                             AND c.nif IS NOT NULL
+                             AND c.nif <> ''
+                        THEN c.nif
+                        ELSE ''
+                    END AS nif,
+                    STRING_AGG(
+                        s.name || ' x' || COALESCE(ps.quantity,1)::text ||
+                        CASE
+                            WHEN ps.description IS NOT NULL
+                                 AND ps.description <> ''
+                            THEN ' (' || ps.description || ')'
+                            ELSE ''
+                        END,
+                        ' | '
+                        ORDER BY s.name
+                    ) AS servicos,
+                    p.preco_total
                 FROM pedidos p
                 JOIN clients c ON c.id_client = p.id_client
                 LEFT JOIN pedido_servicos ps ON ps.id_pedido = p.id_pedido
                 LEFT JOIN services s ON s.id_service = ps.id_service
                 WHERE p.data_entrada::date >= %s
-                  AND p.data_entrada::date < %s
-                GROUP BY p.data_entrada::date, c.name, c.nif, p.include_nif, p.preco_total
-                ORDER BY p.data_entrada::date ASC, p.id_pedido ASC
+                  AND p.data_entrada::date <  %s
+                GROUP BY
+                    p.id_pedido,
+                    p.data_entrada::date,
+                    c.name,
+                    c.nif,
+                    p.include_nif,
+                    p.preco_total
+                ORDER BY
+                    p.data_entrada::date ASC,
+                    p.id_pedido ASC
                 """,
                 (start, end),
             )
@@ -1381,14 +1393,15 @@ def exportacoes_caixa_detalhado():
     output = io.StringIO()
     writer = csv.writer(output, delimiter=";")
     writer.writerow(["dia", "nome", "nif", "servicos", "valor_total"])
+
     for r in rows:
         writer.writerow(
             [
-                r.get("dia"),
-                r.get("nome"),
-                r.get("nif"),
-                r.get("servicos"),
-                f"{float(r.get('valor_total') or 0):.2f}".replace(".", ","),
+                r.get("dia").strftime("%Y-%m-%d") if r.get("dia") else "",
+                r.get("nome") or "",
+                r.get("nif") or "",
+                r.get("servicos") or "",
+                f"{float(r.get('preco_total') or 0):.2f}".replace(".", ","),
             ]
         )
 
