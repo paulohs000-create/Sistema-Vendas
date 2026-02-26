@@ -1149,6 +1149,156 @@ def serve_seamstress_page():
 
 
 # -----------------------------------------------------------------------------
+# APIs do Painel Costureiras
+# -----------------------------------------------------------------------------
+@app.get("/pedidos/stats")
+@login_required(["admin", "costureira"])
+@handle_errors
+def pedidos_stats():
+    today = date.today()
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # pendentes com entrega hoje
+            cur.execute(
+                """
+                SELECT COUNT(*)::int AS c
+                FROM pedido_servicos ps
+                JOIN pedidos p ON p.id_pedido = ps.id_pedido
+                WHERE p.data_prevista = %s
+                  AND COALESCE(ps.status,'') <> 'Concluído'
+                """,
+                (today,),
+            )
+            pending_today = cur.fetchone()["c"]
+
+            # concluídos hoje (pela data de conclusão)
+            cur.execute(
+                """
+                SELECT COUNT(*)::int AS c
+                FROM pedido_servicos
+                WHERE status = 'Concluído'
+                  AND data_conclusao::date = %s
+                """,
+                (today,),
+            )
+            completed_today = cur.fetchone()["c"]
+
+    return jsonify({"pending_today": pending_today, "completed_today": completed_today}), 200
+
+@app.get("/pedidos/pendentes")
+@login_required(["admin", "costureira"])
+@handle_errors
+def pedidos_pendentes():
+    """
+    Suporta:
+      - sem params -> retorna {atrasados, hoje, proximos}
+      - ?date=YYYY-MM-DD -> retorna lista simples para aquela data
+      - ?search=... -> retorna lista simples por busca (cliente ou pedido)
+    """
+    q_date = request.args.get("date")
+    q_search = (request.args.get("search") or "").strip()
+
+    base_sql = """
+      SELECT
+        ps.id_pedido_servico,
+        ps.id_pedido,
+        ps.quantity,
+        ps.status,
+        ps.data_conclusao,
+        p.data_prevista,
+        c.name AS client_name,
+        s.name AS service_name,
+        ss.name AS costureira_conclusao
+      FROM pedido_servicos ps
+      JOIN pedidos p ON p.id_pedido = ps.id_pedido
+      JOIN clients c ON c.id_client = p.id_client
+      JOIN services s ON s.id_service = ps.id_service
+      LEFT JOIN seamstresses ss ON ss.id_seamstress = ps.id_seamstress_conclusao
+    """
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # Busca
+            if q_search:
+                if q_search.isdigit():
+                    cur.execute(
+                        base_sql
+                        + """
+                        WHERE ps.id_pedido = %s
+                        ORDER BY p.data_prevista ASC, ps.id_pedido_servico ASC
+                        """,
+                        (int(q_search),),
+                    )
+                else:
+                    cur.execute(
+                        base_sql
+                        + """
+                        WHERE c.name ILIKE %s
+                        ORDER BY p.data_prevista ASC, ps.id_pedido_servico ASC
+                        """,
+                        (f"%{q_search}%",),
+                    )
+                rows = cur.fetchall()
+                return jsonify([_service_row_to_payload(r) for r in rows]), 200
+
+            # Filtro por data (retorna lista simples)
+            if q_date:
+                cur.execute(
+                    base_sql
+                    + """
+                    WHERE p.data_prevista = %s
+                    ORDER BY ps.id_pedido_servico ASC
+                    """,
+                    (q_date,),
+                )
+                rows = cur.fetchall()
+                return jsonify([_service_row_to_payload(r) for r in rows]), 200
+
+            # Sem filtros -> categorizado
+            today = date.today()
+
+            # atrasados
+            cur.execute(
+                base_sql
+                + """
+                WHERE p.data_prevista < %s
+                  AND COALESCE(ps.status,'') <> 'Concluído'
+                ORDER BY p.data_prevista ASC, ps.id_pedido_servico ASC
+                """,
+                (today,),
+            )
+            atrasados = [_service_row_to_payload(r) for r in cur.fetchall()]
+
+            # hoje
+            cur.execute(
+                base_sql
+                + """
+                WHERE p.data_prevista = %s
+                  AND COALESCE(ps.status,'') <> 'Concluído'
+                ORDER BY ps.id_pedido_servico ASC
+                """,
+                (today,),
+            )
+            hoje = [_service_row_to_payload(r) for r in cur.fetchall()]
+
+            # proximos
+            cur.execute(
+                base_sql
+                + """
+                WHERE p.data_prevista > %s
+                  AND COALESCE(ps.status,'') <> 'Concluído'
+                ORDER BY p.data_prevista ASC, ps.id_pedido_servico ASC
+                """,
+                (today,),
+            )
+            proximos = [_service_row_to_payload(r) for r in cur.fetchall()]
+
+    return jsonify({"atrasados": atrasados, "hoje": hoje, "proximos": proximos}), 200
+
+
+
+# -----------------------------------------------------------------------------
 # Controle de Caixa - Páginas e APIs
 # -----------------------------------------------------------------------------
 def _parse_day(s: str | None) -> date:
