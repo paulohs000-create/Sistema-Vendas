@@ -1397,7 +1397,7 @@ def exportacoes_caixa_detalhado():
 
     output = io.StringIO()
     writer = csv.writer(output, delimiter=";")
-    writer.writerow(["dia", "nome", "nif", "cartao", "servicos", "valor_total_eur", "iva_23"])
+    writer.writerow(["dia", "nome", "nif", "cartao", "servicos", "valor_total_eur", "iva_23", "moeda"])
 
     for r in rows:
         total = Decimal(str(r.get("preco_total") or 0))
@@ -1410,8 +1410,9 @@ def exportacoes_caixa_detalhado():
                 r.get("nif") or "",
                 "1" if r.get("paid_by_card") else "0",
                 r.get("servicos") or "",
-                f"{total:.2f} €",
-                f"{iva:.2f} €",
+                f'="{total:.2f}"',
+                f'="{iva:.2f}"',
+                "EUR",
             ]
         )
 
