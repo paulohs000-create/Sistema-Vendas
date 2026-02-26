@@ -1210,6 +1210,14 @@ def controle_caixa_page():
     )
 
 
+@app.get("/exportacoes-caixa")
+@login_required(["admin"])
+def exportacoes_caixa_page():
+    today = date.today()
+    month = request.args.get("month") or f"{today.year:04d}-{today.month:02d}"
+    return render_template_string(EXPORTACOES_CAIXA_HTML, user=session.get("user"), month=month)
+
+
 @app.get("/controle-caixa/data")
 @login_required(["admin"])
 @handle_errors
