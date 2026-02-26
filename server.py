@@ -882,6 +882,32 @@ EXPORTACOES_CAIXA_HTML = """
 </html>
 """
 
+def _service_row_to_payload(r: dict) -> dict:
+    data_prevista = r.get("data_prevista")
+    if isinstance(data_prevista, (datetime, date)):
+        data_prevista_str = data_prevista.strftime("%Y-%m-%d")
+    else:
+        data_prevista_str = None
+
+    data_conclusao = r.get("data_conclusao")
+    if isinstance(data_conclusao, datetime):
+        data_conclusao_str = data_conclusao.strftime("%Y-%m-%d %H:%M")
+    else:
+        data_conclusao_str = None
+
+    return {
+        "id_pedido_servico": r["id_pedido_servico"],
+        "id_pedido": r["id_pedido"],
+        "service_name": r["service_name"],
+        "client_name": r["client_name"],
+        "quantity": r["quantity"],
+        "status": r.get("status"),
+        "data_prevista": data_prevista_str,
+        "costureira_conclusao": r.get("costureira_conclusao"),
+        "data_conclusao": data_conclusao_str,
+    }
+
+
 # -----------------------------------------------------------------------------
 # Pages
 # -----------------------------------------------------------------------------
