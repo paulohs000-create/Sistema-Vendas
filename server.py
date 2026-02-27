@@ -1,8 +1,5 @@
 import os
 import base64
-import csv
-from decimal import Decimal, ROUND_HALF_UP
-import io
 from datetime import date, datetime, timedelta
 from functools import wraps
 
@@ -17,7 +14,6 @@ from flask import (
     request,
     session,
     url_for,
-    Response,
 )
 
 # -----------------------------------------------------------------------------
@@ -31,8 +27,8 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
 # QZ Tray (assinatura + health)
 # -----------------------------------------------------------------------------
 def _qz_private_key_pem() -> str | None:
+    # chave PEM armazenada no Railway Variables
     return os.environ.get("QZ_PRIVATE_KEY_PEM") or os.environ.get("QZ_PRIVATE_KEY")
-
 
 def _qz_sign_payload(payload: str) -> str:
     """Assina o payload vindo do QZ e retorna BASE64 (texto puro)."""
@@ -40,6 +36,8 @@ def _qz_sign_payload(payload: str) -> str:
     if not pem:
         raise RuntimeError("QZ_PRIVATE_KEY_PEM não configurada.")
 
+    # pyOpenSSL removeu crypto.sign em versões recentes, então assinamos
+    # direto com cryptography para manter compatibilidade.
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import padding
 
@@ -58,34 +56,58 @@ def _qz_sign_payload(payload: str) -> str:
     )
     return base64.b64encode(sig).decode("utf-8").strip()
 
-
 @app.get("/qz/health")
 def qz_health():
+    # Verifica se o arquivo público existe no container
     cert_path = os.path.join(app.root_path, "static", "qz", "certificate.pem")
-    return jsonify(
-        {
-            "ok": True,
-            "certificate_url": "/static/qz/certificate.pem",
-            "has_certificate_file": os.path.exists(cert_path),
-            "has_private_key_env": bool(_qz_private_key_pem()),
-            "signature_alg": (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip(),
-        }
-    )
-
+    return jsonify({
+        "ok": True,
+        "certificate_url": "/static/qz/certificate.pem",
+        "has_certificate_file": os.path.exists(cert_path),
+        "has_private_key_env": bool(_qz_private_key_pem()),
+        "signature_alg": (os.environ.get("QZ_SIGNATURE_ALG") or "sha256").lower().strip(),
+    })
 
 @app.post("/qz/sign")
 def qz_sign():
+    # QZ envia texto puro para assinar
     payload = request.get_data(as_text=True) or ""
     try:
         return (_qz_sign_payload(payload), 200, {"Content-Type": "text/plain; charset=utf-8"})
     except Exception as e:
+        # Retorna texto puro para facilitar debug no frontend
         return (f"ERROR: {e}", 500, {"Content-Type": "text/plain; charset=utf-8"})
+
+
+# -------------------------------------------------------------------------
+# Schema safety (migrações leves em runtime)
+# -------------------------------------------------------------------------
+def ensure_schema():
+    """Aplica ALTER TABLE leves e idempotentes.
+    Observação: para projetos maiores, prefira uma migração (Alembic).
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Flag para relatórios: pedido com contribuinte (NIF) selecionado
+                cur.execute(
+                    """
+                    ALTER TABLE IF EXISTS pedidos
+                    ADD COLUMN IF NOT EXISTS include_nif boolean NOT NULL DEFAULT false
+                    """
+                )
+            conn.commit()
+    except Exception as e:
+        # Não derruba o app por falha de migração leve; loga apenas.
+        print(f"[SCHEMA] ensure_schema falhou: {e}")
+
 
 
 # -----------------------------------------------------------------------------
 # Database
 # -----------------------------------------------------------------------------
 def _get_database_url() -> str | None:
+    # Railway normalmente injeta DATABASE_URL, mas vamos aceitar variações
     return (
         os.environ.get("DATABASE_URL")
         or os.environ.get("database_url")
@@ -93,7 +115,6 @@ def _get_database_url() -> str | None:
         or os.environ.get("postgres_url")
         or os.environ.get("DATABASE_URL_INTERNAL")
         or os.environ.get("DATABASE_URL_PUBLIC")
-        or os.environ.get("DATABASE_URL_PRIVATE")
         or os.environ.get("DATABASE_URL_PRIVATE")
         or os.environ.get("database_url_private")
     )
@@ -103,6 +124,7 @@ def get_db_connection():
     db_url = _get_database_url()
     if not db_url:
         raise RuntimeError("DATABASE_URL não está definida no ambiente.")
+    # dict_row => cursor retorna dicts
     return psycopg.connect(db_url, row_factory=dict_row)
 
 
@@ -121,50 +143,21 @@ def handle_errors(f):
     return wrapper
 
 
-# -------------------------------------------------------------------------
-# Schema safety (migrações leves em runtime)
-# -------------------------------------------------------------------------
-def ensure_schema():
-    """ALTER TABLE idempotente (sem quebrar deploy)."""
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # já existia: include_nif
-                cur.execute(
-                    """
-                    ALTER TABLE IF EXISTS pedidos
-                    ADD COLUMN IF NOT EXISTS include_nif boolean NOT NULL DEFAULT false
-                    """
-                )
-
-                # novo: pagamento por cartão
-                cur.execute(
-                    """
-                    ALTER TABLE IF EXISTS pedidos
-                    ADD COLUMN IF NOT EXISTS paid_by_card boolean NOT NULL DEFAULT false
-                    """
-                )
-
-                # (opcional) idx simples para filtros de caixa
-                cur.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_pedidos_data_entrada_date
-                    ON pedidos ((data_entrada::date))
-                    """
-                )
-            conn.commit()
-    except Exception as e:
-        print(f"[SCHEMA] ensure_schema falhou: {e}")
-
-
 ensure_schema()
+
 
 # -----------------------------------------------------------------------------
 # Auth
 # -----------------------------------------------------------------------------
 def _env_user_pass(prefix: str) -> tuple[str | None, str | None]:
+    """
+    Lê PREFIX_USER / PREFIX_PASS
+    Também aceita "PREFIX_USER" no formato "user:pass"
+    """
     u = os.environ.get(f"{prefix}_USER")
     p = os.environ.get(f"{prefix}_PASS")
+
+    # fallback: se o cara colocou tudo em uma env só "user:pass"
     if u and (":" in u) and (p is None):
         parts = u.split(":", 1)
         u = parts[0].strip()
@@ -193,8 +186,9 @@ def login_required(roles: list[str] | None = None):
         def wrapper(*args, **kwargs):
             if not session.get("user"):
                 return redirect(url_for("login", next=request.path))
-            if roles and session.get("role") not in roles:
-                return jsonify({"error": "Acesso negado."}), 403
+            if roles:
+                if session.get("role") not in roles:
+                    return jsonify({"error": "Acesso negado."}), 403
             return f(*args, **kwargs)
 
         return wrapper
@@ -203,7 +197,7 @@ def login_required(roles: list[str] | None = None):
 
 
 # -----------------------------------------------------------------------------
-# Simple login page (inline)
+# Simple login page (sem template extra)
 # -----------------------------------------------------------------------------
 LOGIN_HTML = """
 <!DOCTYPE html>
@@ -248,15 +242,17 @@ LOGIN_HTML = """
 </html>
 """
 
+
 # -----------------------------------------------------------------------------
-# Admin dashboard (inline)
+# Admin dashboard (inline + fetch stats)
 # -----------------------------------------------------------------------------
-ADMIN_HTML = """<!DOCTYPE html>
+ADMIN_HTML = """
+<!DOCTYPE html>
 <html lang="pt-PT">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dashboard</title>
+  <title>Painel Admin</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="min-h-screen bg-[#0b1220] text-white">
@@ -291,15 +287,12 @@ ADMIN_HTML = """<!DOCTYPE html>
           <div class="text-xs text-white/60 ml-6">Pendências e conclusão</div>
         </a>
 
-        <a href="/controle-caixa" class="block px-3 py-2 rounded-xl hover:bg-white/10">
-          💳 <span class="ml-2">Controle de Caixa</span>
-          <div class="text-xs text-white/60 ml-6">Cartão, NIF e exportação</div>
-        </a>
-
-        <a href="/exportacoes-caixa" class="block px-3 py-2 rounded-xl hover:bg-white/10">
-          📤 <span class="ml-2">Exportações Caixa</span>
-          <div class="text-xs text-white/60 ml-6">CSV mensal detalhado</div>
-        </a>
+        <div class="mt-6 pt-4 border-t border-white/10 text-white/50 text-sm">
+          <div>Usuários (em breve)</div>
+          <div class="text-xs">Criar/editar/remover</div>
+          <div class="mt-3">Relatórios (em breve)</div>
+          <div class="text-xs">Vendas e produtividade</div>
+        </div>
       </nav>
 
       <div class="mt-6">
@@ -310,614 +303,163 @@ ADMIN_HTML = """<!DOCTYPE html>
     </aside>
 
     <main class="flex-1 p-8">
-      <div class="flex items-start justify-between gap-4">
+      <div class="flex items-center justify-between">
         <div>
-          <h1 class="text-4xl font-bold">Dashboard</h1>
-          <p class="text-white/60 mt-1">Resumo de vendas (OT + FR) e faturação com IVA (Somente FR).</p>
+          <h1 class="text-3xl font-bold">Dashboard</h1>
+          <p class="text-white/60 mt-1">Aqui vamos centralizar tudo do admin.</p>
         </div>
         <div class="text-white/70 text-sm">
           Logado como: <span class="font-semibold text-white">{{ user }}</span>
         </div>
       </div>
 
-      <!-- Filtro por data -->
-      <div class="mt-6 p-5 rounded-2xl bg-white/5 border border-white/10">
-        <div class="flex flex-col md:flex-row md:items-center gap-3">
-          <div class="flex-1">
-            <div class="text-sm text-white/70 mb-1">Buscar por data</div>
-            <input id="day" type="date" value="{{ day }}" class="w-full md:w-72 px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-white"/>
-          </div>
-          <div class="pt-5 md:pt-0">
-            <button id="btnApplyDay" class="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 font-semibold">
-              Buscar
-            </button>
-          </div>
-          <div class="text-xs text-white/50 md:ml-auto">
-            Dica: selecione um dia para ver “Vendas Hoje” daquele dia.
-          </div>
-        </div>
-      </div>
-
-      <!-- Cards -->
-      <div class="mt-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-sm text-white/60">Vendas Hoje</div>
-          <div id="salesDayAll" class="text-3xl font-bold mt-2">—</div>
-          <div class="text-xs text-white/50 mt-1">OT + FR</div>
-        </div>
-
-        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-sm text-white/60">Vendas Hoje (com IVA)</div>
-          <div id="salesDayFR" class="text-3xl font-bold mt-2 text-emerald-300">—</div>
-          <div class="text-xs text-white/50 mt-1">Somente FR</div>
-        </div>
-
-        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-sm text-white/60">Vendas do Mês</div>
-          <div id="salesMonthAll" class="text-3xl font-bold mt-2">—</div>
-          <div class="text-xs text-white/50 mt-1">OT + FR</div>
-        </div>
-
-        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-sm text-white/60">Vendas do Mês (com IVA)</div>
-          <div id="salesMonthFR" class="text-3xl font-bold mt-2 text-emerald-300">—</div>
-          <div class="text-xs text-white/50 mt-1">Somente FR</div>
-        </div>
-      </div>
-
-      <!-- Comparação mês atual vs mês anterior -->
-      <div class="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
-          <div class="flex items-center justify-between">
-            <div>
-              <div class="text-lg font-bold">Comparação do Mês (OT + FR)</div>
-              <div class="text-sm text-white/60">Mês atual vs mês anterior</div>
-            </div>
-            <div id="pctAll" class="text-lg font-bold">—</div>
-          </div>
-
-          <div class="mt-4">
-            <div class="text-xs text-white/50">Mês anterior</div>
-            <div class="h-3 rounded-full bg-white/10 overflow-hidden">
-              <div id="barPrevAll" class="h-full bg-white/30 w-0"></div>
-            </div>
-            <div id="prevAll" class="text-sm mt-1 text-white/70">—</div>
-          </div>
-
-          <div class="mt-4">
-            <div class="text-xs text-white/50">Mês atual</div>
-            <div class="h-3 rounded-full bg-white/10 overflow-hidden">
-              <div id="barCurAll" class="h-full bg-purple-500/70 w-0"></div>
-            </div>
-            <div id="curAll" class="text-sm mt-1 text-white/70">—</div>
-          </div>
-        </div>
-
-        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
-          <div class="flex items-center justify-between">
-            <div>
-              <div class="text-lg font-bold">Comparação do Mês (Somente FR)</div>
-              <div class="text-sm text-white/60">Mês atual vs mês anterior</div>
-            </div>
-            <div id="pctFR" class="text-lg font-bold">—</div>
-          </div>
-
-          <div class="mt-4">
-            <div class="text-xs text-white/50">Mês anterior</div>
-            <div class="h-3 rounded-full bg-white/10 overflow-hidden">
-              <div id="barPrevFR" class="h-full bg-white/30 w-0"></div>
-            </div>
-            <div id="prevFR" class="text-sm mt-1 text-white/70">—</div>
-          </div>
-
-          <div class="mt-4">
-            <div class="text-xs text-white/50">Mês atual</div>
-            <div class="h-3 rounded-full bg-white/10 overflow-hidden">
-              <div id="barCurFR" class="h-full bg-emerald-500/70 w-0"></div>
-            </div>
-            <div id="curFR" class="text-sm mt-1 text-white/70">—</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="mt-6 text-xs text-white/40">
-        Sugestões futuras: gráfico diário do mês (linha), split Cartão x Dinheiro, e top 5 serviços.
-      </div>
-    </main>
-  </div>
-
-<script>
-  function eur(v){
-    try{
-      const n = Number(v || 0);
-      return n.toLocaleString('pt-PT', { style:'currency', currency:'EUR' });
-    }catch(e){ return '0,00 €'; }
-  }
-
-  function setBar(el, cur, max){
-    const pct = max <= 0 ? 0 : Math.round((cur / max) * 100);
-    el.style.width = Math.max(0, Math.min(100, pct)) + '%';
-  }
-
-  async function loadStats(){
-    const day = document.getElementById('day')?.value || '';
-    const resp = await fetch(`/admin/stats?day=${encodeURIComponent(day)}`);
-    const data = await resp.json();
-
-    document.getElementById('salesDayAll').textContent = eur(data.sales_day_all);
-    document.getElementById('salesDayFR').textContent  = eur(data.sales_day_fr);
-    document.getElementById('salesMonthAll').textContent = eur(data.sales_month_all);
-    document.getElementById('salesMonthFR').textContent  = eur(data.sales_month_fr);
-
-    document.getElementById('prevAll').textContent = `Mês anterior: ${eur(data.sales_prev_month_all)}`;
-    document.getElementById('curAll').textContent  = `Mês atual: ${eur(data.sales_month_all)}`;
-
-    document.getElementById('prevFR').textContent = `Mês anterior: ${eur(data.sales_prev_month_fr)}`;
-    document.getElementById('curFR').textContent  = `Mês atual: ${eur(data.sales_month_fr)}`;
-
-    const pctAll = Number(data.pct_month_all || 0);
-    const pctFR  = Number(data.pct_month_fr || 0);
-
-    const pctAllEl = document.getElementById('pctAll');
-    const pctFREl  = document.getElementById('pctFR');
-
-    pctAllEl.textContent = (pctAll >= 0 ? '▲ ' : '▼ ') + Math.abs(pctAll).toFixed(1) + '%';
-    pctAllEl.className = 'text-lg font-bold ' + (pctAll >= 0 ? 'text-emerald-300' : 'text-red-300');
-
-    pctFREl.textContent = (pctFR >= 0 ? '▲ ' : '▼ ') + Math.abs(pctFR).toFixed(1) + '%';
-    pctFREl.className = 'text-lg font-bold ' + (pctFR >= 0 ? 'text-emerald-300' : 'text-red-300');
-
-    const maxAll = Math.max(Number(data.sales_prev_month_all||0), Number(data.sales_month_all||0));
-    const maxFR  = Math.max(Number(data.sales_prev_month_fr||0), Number(data.sales_month_fr||0));
-
-    setBar(document.getElementById('barPrevAll'), Number(data.sales_prev_month_all||0), maxAll);
-    setBar(document.getElementById('barCurAll'),  Number(data.sales_month_all||0), maxAll);
-
-    setBar(document.getElementById('barPrevFR'), Number(data.sales_prev_month_fr||0), maxFR);
-    setBar(document.getElementById('barCurFR'),  Number(data.sales_month_fr||0), maxFR);
-  }
-
-  document.getElementById('btnApplyDay')?.addEventListener('click', () => {
-    const day = document.getElementById('day')?.value || '';
-    window.location.href = `/admin?day=${encodeURIComponent(day)}`;
-  });
-
-  loadStats();
-</script>
-</body>
-</html>"""
-
-# -----------------------------------------------------------------------------
-# Controle de Caixa (Admin)
-# -----------------------------------------------------------------------------
-CONTROLE_CAIXA_HTML = """
-<!DOCTYPE html>
-<html lang="pt-PT">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Controle de Caixa</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="min-h-screen bg-[#0b1220] text-white">
-  <div class="flex min-h-screen">
-    <aside class="w-72 bg-[#0a1020] border-r border-white/10 p-4">
-      <div class="flex items-center gap-3 mb-6">
-        <div class="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center font-bold">SV</div>
-        <div>
-          <div class="font-bold leading-5">Sistema-Vendas</div>
-          <div class="text-xs text-white/60">Painel Admin</div>
-        </div>
-      </div>
-
-      <nav class="space-y-2">
-        <a href="/admin" class="block px-3 py-2 rounded-xl hover:bg-white/10">
-          🏠 <span class="ml-2">Dashboard</span>
-          <div class="text-xs text-white/60 ml-6">Resumo do sistema</div>
-        </a>
-
-        <a href="/" class="block px-3 py-2 rounded-xl hover:bg-white/10">
-          🧾 <span class="ml-2">Atendimento (Caixa)</span>
-          <div class="text-xs text-white/60 ml-6">Criar pedidos</div>
-        </a>
-
-        <a href="/gerenciamento" class="block px-3 py-2 rounded-xl hover:bg-white/10">
-          🧩 <span class="ml-2">Gerenciamento</span>
-          <div class="text-xs text-white/60 ml-6">Serviços e costureiras</div>
-        </a>
-
-        <a href="/costureiras" class="block px-3 py-2 rounded-xl hover:bg-white/10">
-          🧵 <span class="ml-2">Painel Costureiras</span>
-          <div class="text-xs text-white/60 ml-6">Pendências e conclusão</div>
-        </a>
-
-        <a href="/controle-caixa" class="block px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15">
-          💳 <span class="ml-2">Controle de Caixa</span>
-          <div class="text-xs text-white/60 ml-6">Cartão, NIF e exportação</div>
-        </a>
-
-        <a href="/exportacoes-caixa" class="block px-3 py-2 rounded-xl hover:bg-white/10">
-          📤 <span class="ml-2">Exportações Caixa</span>
-          <div class="text-xs text-white/60 ml-6">CSV mensal detalhado</div>
-        </a>
-
-      </nav>
-
-      <div class="mt-6">
-        <a href="/logout?next=/login" class="block text-center px-4 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-500/30">
-          Sair
-        </a>
-      </div>
-    </aside>
-
-    <main class="flex-1 p-8">
-      <div class="flex items-start justify-between gap-4">
-        <div>
-          <h1 class="text-3xl font-bold">Controle de Caixa</h1>
-          <p class="text-white/60 mt-1">Marque se foi pago por cartão e acompanhe totais por dia/mês.</p>
-        </div>
-        <div class="text-white/70 text-sm">
-          Logado como: <span class="font-semibold text-white">{{ user }}</span>
-        </div>
-      </div>
-
-      <!-- Filtros -->
-      <div class="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <!-- KPIs -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-8">
         <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-white/70 text-sm font-semibold mb-2">Filtrar por dia</div>
-          <div class="flex items-center gap-2">
-            <input id="day-filter" type="date" value="{{ day }}" class="px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-white w-full"/>
-            <button id="btn-day" class="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-semibold">Aplicar</button>
-          </div>
+          <div class="text-white/60 text-sm">Pendentes hoje</div>
+          <div id="kpi-pendentes-hoje" class="text-3xl font-extrabold mt-1">—</div>
+        </div>
+        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
+          <div class="text-white/60 text-sm">Concluídos hoje</div>
+          <div id="kpi-concluidos-hoje" class="text-3xl font-extrabold mt-1">—</div>
+        </div>
+        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
+          <div class="text-white/60 text-sm">Atrasados</div>
+          <div id="kpi-atrasados" class="text-3xl font-extrabold mt-1">—</div>
         </div>
 
         <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-white/70 text-sm font-semibold mb-2">Exportar CSV mensal</div>
-          <div class="flex items-center gap-2">
-            <input id="month-filter" type="month" value="{{ month }}" class="px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-white w-full"/>
-            <button id="btn-month" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold">Baixar</button>
-          </div>
-          <div class="text-xs text-white/50 mt-2">Baixa todos os pedidos do mês em CSV.</div>
+          <div class="text-white/60 text-sm">Pedidos criados hoje</div>
+          <div id="kpi-pedidos-hoje" class="text-3xl font-extrabold mt-1">—</div>
         </div>
-
         <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-white/70 text-sm font-semibold mb-2">Totais do dia ({{ day }})</div>
-          <div class="grid grid-cols-2 gap-3">
-            <div class="p-4 rounded-xl bg-white/5 border border-white/10">
-              <div class="text-xs text-white/60">Total Cartão</div>
-              <div id="tot-card" class="text-xl font-extrabold">—</div>
-            </div>
-            <div class="p-4 rounded-xl bg-white/5 border border-white/10">
-              <div class="text-xs text-white/60">Total Dinheiro</div>
-              <div id="tot-cash" class="text-xl font-extrabold">—</div>
-            </div>
-            <div class="p-4 rounded-xl bg-white/5 border border-white/10">
-              <div class="text-xs text-white/60">Total Com NIF</div>
-              <div id="tot-nif" class="text-xl font-extrabold">—</div>
-            </div>
-            <div class="p-4 rounded-xl bg-white/5 border border-white/10">
-              <div class="text-xs text-white/60">Total Sem NIF</div>
-              <div id="tot-no-nif" class="text-xl font-extrabold">—</div>
-            </div>
-          </div>
+          <div class="text-white/60 text-sm">Faturamento hoje</div>
+          <div id="kpi-fat-hoje" class="text-3xl font-extrabold mt-1">—</div>
+        </div>
+        <div class="p-5 rounded-2xl bg-white/5 border border-white/10">
+          <div class="text-white/60 text-sm">Faturamento mês</div>
+          <div id="kpi-fat-mes" class="text-3xl font-extrabold mt-1">—</div>
         </div>
       </div>
 
-      <!-- Tabela -->
+      <!-- Quick links -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+        <a href="/gerenciamento" class="p-5 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition">
+          <div class="font-bold text-lg">Gerenciamento</div>
+          <div class="text-white/60 text-sm mt-1">Cadastrar/editar serviços e costureiras</div>
+        </a>
+
+        <a href="/" class="p-5 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition">
+          <div class="font-bold text-lg">Atendimento</div>
+          <div class="text-white/60 text-sm mt-1">Criar pedidos e imprimir talão</div>
+        </a>
+
+        <a href="/costureiras" class="p-5 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition">
+          <div class="font-bold text-lg">Painel Costureiras</div>
+          <div class="text-white/60 text-sm mt-1">Acompanhar pendências e conclusões</div>
+        </a>
+      </div>
+
+      <!-- Lists -->
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4 mt-6">
+        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
+          <div class="font-bold text-lg">Atrasados</div>
+          <div class="text-white/60 text-sm mt-1">Top 10</div>
+          <div id="list-atrasados" class="mt-4 space-y-3 text-sm text-white/80">Carregando...</div>
+        </div>
+
+        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
+          <div class="font-bold text-lg">Próximos 7 dias</div>
+          <div class="text-white/60 text-sm mt-1">Top 10</div>
+          <div id="list-proximos" class="mt-4 space-y-3 text-sm text-white/80">Carregando...</div>
+        </div>
+
+        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
+          <div class="font-bold text-lg">Últimos pedidos</div>
+          <div class="text-white/60 text-sm mt-1">Top 10</div>
+          <div id="list-ultimos" class="mt-4 space-y-3 text-sm text-white/80">Carregando...</div>
+        </div>
+      </div>
+
       <div class="mt-6 p-6 rounded-2xl bg-white/5 border border-white/10">
-        <div class="flex items-center justify-between">
-          <div>
-            <div class="text-lg font-bold">Pedidos do dia</div>
-            <div class="text-sm text-white/60">Marque “Cartão” e/ou apague uma nota (pedido) se necessário.</div>
-          </div>
-          <div id="save-hint" class="text-sm text-white/60"></div>
-        </div>
-
-        <div class="mt-4 overflow-auto">
-          <table class="min-w-full text-sm">
-            <thead class="text-white/70">
-              <tr class="border-b border-white/10">
-                <th class="text-left py-2 pr-4">Pedido</th>
-                <th class="text-left py-2 pr-4">Hora</th>
-                <th class="text-left py-2 pr-4">Cliente</th>
-                <th class="text-left py-2 pr-4">NIF</th>
-                <th class="text-left py-2 pr-4">Total</th>
-                <th class="text-left py-2 pr-4">Cartão</th>
-                <th class="text-left py-2 pr-4">Ações</th>
-              </tr>
-            </thead>
-            <tbody id="rows" class="text-white/90"></tbody>
-          </table>
-        </div>
+        <div class="font-bold text-lg">Próximos passos</div>
+        <ul class="list-disc ml-6 mt-2 text-white/70 text-sm space-y-1">
+          <li>Gestão de usuários (admin cria caixa/costureira, reseta senha, desativa)</li>
+          <li>Relatórios e exportação</li>
+        </ul>
       </div>
     </main>
   </div>
 
 <script>
-  const DAY = "{{ day }}";
   function eur(v){
-    try { return new Intl.NumberFormat('pt-PT', { style: 'currency', currency: 'EUR' }).format(Number(v||0)); }
-    catch(e){ return "€ " + (v||0); }
+    if (v === null || v === undefined) return "—";
+    try {
+      return new Intl.NumberFormat('pt-PT', { style: 'currency', currency: 'EUR' }).format(Number(v));
+    } catch(e) {
+      return "€ " + v;
+    }
   }
 
-  function setTotals(t){
-    document.getElementById("tot-card").textContent = eur(t.total_card);
-    document.getElementById("tot-cash").textContent = eur(t.total_cash);
-    document.getElementById("tot-nif").textContent = eur(t.total_with_nif);
-    document.getElementById("tot-no-nif").textContent = eur(t.total_without_nif);
-  }
-
-  function rowHtml(p){
-    const nifBadge = p.include_nif ? '<span class="px-2 py-0.5 rounded-full text-xs bg-emerald-500/15 border border-emerald-500/20 text-emerald-200">Com NIF</span>'
-                                  : '<span class="px-2 py-0.5 rounded-full text-xs bg-white/10 border border-white/10 text-white/70">Sem NIF</span>';
+  function itemLinhaPedido(p){
+    const dt = p.data_prevista ? String(p.data_prevista) : "—";
+    const total = (p.preco_total !== null && p.preco_total !== undefined) ? eur(p.preco_total) : "—";
+    const pend = (p.pendentes !== null && p.pendentes !== undefined) ? `${p.pendentes} pend.` : "";
     return `
-      <tr class="border-b border-white/5 hover:bg-white/5" data-pedido="${p.id_pedido}">
-        <td class="py-3 pr-4 font-semibold">#${p.id_pedido}</td>
-        <td class="py-3 pr-4 text-white/70">${p.time || ""}</td>
-        <td class="py-3 pr-4">${p.client_name || ""}</td>
-        <td class="py-3 pr-4">${nifBadge}</td>
-        <td class="py-3 pr-4 font-semibold">${eur(p.preco_total)}</td>
-        <td class="py-3 pr-4">
-          <label class="inline-flex items-center gap-2 select-none">
-            <input class="pay-card" type="checkbox" ${p.paid_by_card ? "checked" : ""}/>
-            <span class="text-white/70">Cartão</span>
-          </label>
-        </td>
-        <td class="py-3 pr-4">
-          <button class="btn-delete px-3 py-1.5 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-200 font-semibold">
-            Apagar
-          </button>
-        </td>
-      </tr>
+      <div class="p-3 rounded-xl bg-white/5 border border-white/10">
+        <div class="flex items-center justify-between">
+          <div class="font-semibold">#${p.id_pedido} — ${p.client_name || ""}</div>
+          <div class="text-white/60">${dt}</div>
+        </div>
+        <div class="flex items-center justify-between mt-1 text-white/70">
+          <div>${pend}</div>
+          <div class="font-semibold">${total}</div>
+        </div>
+      </div>
     `;
   }
 
-  async function loadDay(){
-    const r = await fetch(`/controle-caixa/data?day=${encodeURIComponent(DAY)}`, { credentials: "same-origin" });
-    const data = await r.json();
-    const tbody = document.getElementById("rows");
-    tbody.innerHTML = (data.rows || []).map(rowHtml).join("");
-    setTotals(data.totals || {});
-  }
-
-  async function savePaidByCard(id_pedido, value){
-    const hint = document.getElementById("save-hint");
-    hint.textContent = "A guardar...";
+  async function loadAdminStats(){
     try{
-      const r = await fetch(`/pedidos/${id_pedido}/payment`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paid_by_card: !!value })
-      });
-      const data = await r.json().catch(()=> ({}));
-      if(!r.ok) throw new Error(data.error || "Falha ao salvar");
-      hint.textContent = "Guardado ✓";
-      await refreshTotals();
-      setTimeout(()=> hint.textContent = "", 900);
+      const r = await fetch("/admin/stats", { credentials: "same-origin" });
+      if(!r.ok){
+        throw new Error("Falha ao carregar stats: HTTP " + r.status);
+      }
+      const data = await r.json();
+
+      document.getElementById("kpi-pendentes-hoje").textContent = data.kpis.pending_today ?? "—";
+      document.getElementById("kpi-concluidos-hoje").textContent = data.kpis.completed_today ?? "—";
+      document.getElementById("kpi-atrasados").textContent = data.kpis.overdue ?? "—";
+      document.getElementById("kpi-pedidos-hoje").textContent = data.kpis.orders_today ?? "—";
+      document.getElementById("kpi-fat-hoje").textContent = eur(data.kpis.revenue_today);
+      document.getElementById("kpi-fat-mes").textContent = eur(data.kpis.revenue_month);
+
+      const atrasados = data.lists.overdue || [];
+      const proximos = data.lists.next7 || [];
+      const ultimos = data.lists.latest || [];
+
+      const elA = document.getElementById("list-atrasados");
+      elA.innerHTML = atrasados.length ? atrasados.map(itemLinhaPedido).join("") : '<div class="text-white/60">Nenhum.</div>';
+
+      const elP = document.getElementById("list-proximos");
+      elP.innerHTML = proximos.length ? proximos.map(itemLinhaPedido).join("") : '<div class="text-white/60">Nenhum.</div>';
+
+      const elU = document.getElementById("list-ultimos");
+      elU.innerHTML = ultimos.length ? ultimos.map(itemLinhaPedido).join("") : '<div class="text-white/60">Nenhum.</div>';
+
     }catch(e){
       console.error(e);
-      hint.textContent = "Erro ao guardar";
-      alert(e.message || "Erro ao guardar");
+      document.getElementById("list-atrasados").innerHTML = '<div class="text-red-300">Erro ao carregar.</div>';
+      document.getElementById("list-proximos").innerHTML = '<div class="text-red-300">Erro ao carregar.</div>';
+      document.getElementById("list-ultimos").innerHTML = '<div class="text-red-300">Erro ao carregar.</div>';
     }
   }
 
-  async function deletePedido(id_pedido){
-    if(!confirm(`Tem certeza que deseja apagar o pedido #${id_pedido}?\\n\\nIsso remove também os serviços do pedido.`)) return;
-    const hint = document.getElementById("save-hint");
-    hint.textContent = "A apagar...";
-    try{
-      const r = await fetch(`/pedidos/${id_pedido}`, { method: "DELETE" });
-      const data = await r.json().catch(()=> ({}));
-      if(!r.ok) throw new Error(data.error || "Falha ao apagar");
-      document.querySelector(`tr[data-pedido="${id_pedido}"]`)?.remove();
-      hint.textContent = "Apagado ✓";
-      await refreshTotals();
-      setTimeout(()=> hint.textContent = "", 900);
-    }catch(e){
-      console.error(e);
-      hint.textContent = "Erro ao apagar";
-      alert(e.message || "Erro ao apagar");
-    }
-  }
-
-  async function refreshTotals(){
-    const r = await fetch(`/controle-caixa/totals?day=${encodeURIComponent(DAY)}`, { credentials: "same-origin" });
-    const data = await r.json().catch(()=>({}));
-    setTotals(data || {});
-  }
-
-  document.addEventListener("change", (e) => {
-    const t = e.target;
-    if(t.classList.contains("pay-card")){
-      const tr = t.closest("tr");
-      const id = tr?.getAttribute("data-pedido");
-      if(!id) return;
-      savePaidByCard(id, t.checked);
-    }
-  });
-
-  document.addEventListener("click", (e) => {
-    const btn = e.target.closest(".btn-delete");
-    if(btn){
-      const tr = btn.closest("tr");
-      const id = tr?.getAttribute("data-pedido");
-      if(id) deletePedido(id);
-    }
-  });
-
-  document.getElementById("btn-day")?.addEventListener("click", () => {
-    const v = document.getElementById("day-filter")?.value;
-    if(!v) return;
-    window.location.href = `/controle-caixa?day=${encodeURIComponent(v)}`;
-  });
-
-  document.getElementById("btn-month")?.addEventListener("click", () => {
-    const v = document.getElementById("month-filter")?.value; // YYYY-MM
-    if(!v) return;
-    window.location.href = `/controle-caixa/export?month=${encodeURIComponent(v)}`;
-  });
-
-  loadDay();
+  loadAdminStats();
 </script>
 </body>
 </html>
 """
-
-
-# -----------------------------------------------------------------------------
-# Exportações de Caixa (Admin)
-# -----------------------------------------------------------------------------
-EXPORTACOES_CAIXA_HTML = """
-<!DOCTYPE html>
-<html lang="pt-PT">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Exportações Caixa</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="min-h-screen bg-[#0b1220] text-white">
-  <div class="flex min-h-screen">
-    <aside class="w-72 bg-[#0a1020] border-r border-white/10 p-4">
-      <div class="flex items-center gap-3 mb-6">
-        <div class="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center font-bold">SV</div>
-        <div>
-          <div class="font-bold leading-5">Sistema-Vendas</div>
-          <div class="text-xs text-white/60">Painel Admin</div>
-        </div>
-      </div>
-
-      <nav class="space-y-2">
-        <a href="/admin" class="block px-3 py-2 rounded-xl hover:bg-white/10">
-          🏠 <span class="ml-2">Dashboard</span>
-          <div class="text-xs text-white/60 ml-6">Resumo do sistema</div>
-        </a>
-
-        <a href="/" class="block px-3 py-2 rounded-xl hover:bg-white/10">
-          🧾 <span class="ml-2">Atendimento (Caixa)</span>
-          <div class="text-xs text-white/60 ml-6">Criar pedidos</div>
-        </a>
-
-        <a href="/gerenciamento" class="block px-3 py-2 rounded-xl hover:bg-white/10">
-          🧩 <span class="ml-2">Gerenciamento</span>
-          <div class="text-xs text-white/60 ml-6">Serviços e costureiras</div>
-        </a>
-
-        <a href="/costureiras" class="block px-3 py-2 rounded-xl hover:bg-white/10">
-          🧵 <span class="ml-2">Painel Costureiras</span>
-          <div class="text-xs text-white/60 ml-6">Pendências e conclusão</div>
-        </a>
-
-        <a href="/controle-caixa" class="block px-3 py-2 rounded-xl hover:bg-white/10">
-          💳 <span class="ml-2">Controle de Caixa</span>
-          <div class="text-xs text-white/60 ml-6">Cartão, NIF e exportação</div>
-        </a>
-
-        <a href="/exportacoes-caixa" class="block px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15">
-          📤 <span class="ml-2">Exportações Caixa</span>
-          <div class="text-xs text-white/60 ml-6">CSV mensal detalhado</div>
-        </a>
-      </nav>
-
-      <div class="mt-6">
-        <a href="/logout?next=/login" class="block text-center px-4 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-500/30">
-          Sair
-        </a>
-      </div>
-    </aside>
-
-    <main class="flex-1 p-8">
-      <div class="flex items-start justify-between gap-4">
-        <div>
-          <h1 class="text-3xl font-bold">Exportações Caixa</h1>
-          <p class="text-white/60 mt-1">Exportar CSV por mês (resumo ou detalhado por serviços).</p>
-        </div>
-        <div class="text-white/70 text-sm">
-          Logado como: <span class="font-semibold text-white">{{ user }}</span>
-        </div>
-      </div>
-
-      <div class="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-lg font-bold">Escolher mês</div>
-          <div class="text-sm text-white/60 mt-1">Selecione o mês e exporte o CSV.</div>
-
-          <div class="mt-4 flex items-center gap-2">
-            <input id="month" type="month" value="{{ month }}" class="px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-white w-full"/>
-          </div>
-
-          <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-            <button id="btn-resumo" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold">
-              Baixar CSV (Resumo)
-            </button>
-            <button id="btn-detalhado" class="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-semibold">
-              Baixar CSV (Detalhado)
-            </button>
-          </div>
-
-          <div class="mt-4 text-xs text-white/50 space-y-1">
-            <div><b>Resumo</b>: 1 linha por pedido (como já existe no Controle de Caixa).</div>
-            <div><b>Detalhado</b>: 1 linha por pedido com coluna “Serviços” (lista/descrição), + Dia, Nome, NIF, Total.</div>
-          </div>
-        </div>
-
-        <div class="p-6 rounded-2xl bg-white/5 border border-white/10">
-          <div class="text-lg font-bold">Campos do CSV detalhado</div>
-          <div class="mt-3 text-sm text-white/70">
-            <ul class="list-disc ml-6 space-y-1">
-              <li><b>dia</b> (data do pedido)</li>
-              <li><b>nome</b> (cliente)</li>
-              <li><b>nif</b> (apenas se “Com NIF” e cliente tiver NIF)</li>
-              <li><b>servicos</b> (descrição dos serviços do pedido)</li>
-              <li><b>valor_total</b> (total do pedido)</li>
-            </ul>
-          </div>
-        </div>
-      </div>
-    </main>
-  </div>
-
-<script>
-  document.getElementById("btn-resumo")?.addEventListener("click", () => {
-    const m = document.getElementById("month")?.value;
-    if(!m) return;
-    window.location.href = `/controle-caixa/export?month=${encodeURIComponent(m)}`;
-  });
-
-  document.getElementById("btn-detalhado")?.addEventListener("click", () => {
-    const m = document.getElementById("month")?.value;
-    if(!m) return;
-    window.location.href = `/exportacoes-caixa/detalhado?month=${encodeURIComponent(m)}`;
-  });
-</script>
-</body>
-</html>
-"""
-
-def _service_row_to_payload(r: dict) -> dict:
-    data_prevista = r.get("data_prevista")
-    if isinstance(data_prevista, (datetime, date)):
-        data_prevista_str = data_prevista.strftime("%Y-%m-%d")
-    else:
-        data_prevista_str = None
-
-    data_conclusao = r.get("data_conclusao")
-    if isinstance(data_conclusao, datetime):
-        data_conclusao_str = data_conclusao.strftime("%Y-%m-%d %H:%M")
-    else:
-        data_conclusao_str = None
-
-    return {
-        "id_pedido_servico": r["id_pedido_servico"],
-        "id_pedido": r["id_pedido"],
-        "service_name": r["service_name"],
-        "client_name": r["client_name"],
-        "quantity": r["quantity"],
-        "status": r.get("status"),
-        "data_prevista": data_prevista_str,
-        "costureira_conclusao": r.get("costureira_conclusao"),
-        "data_conclusao": data_conclusao_str,
-    }
 
 
 # -----------------------------------------------------------------------------
@@ -962,15 +504,12 @@ def login():
             return redirect("/")
         return redirect(next_url)
 
-    return (
-        render_template_string(
-            LOGIN_HTML,
-            error="Usuário ou senha inválidos",
-            next_url=next_url,
-            username=username,
-        ),
-        401,
-    )
+    return render_template_string(
+        LOGIN_HTML,
+        error="Usuário ou senha inválidos",
+        next_url=next_url,
+        username=username,
+    ), 401
 
 
 @app.get("/logout")
@@ -983,52 +522,20 @@ def logout():
 @app.get("/admin")
 @login_required(["admin"])
 def admin_dashboard():
-    day_str = (request.args.get("day") or "").strip()
-    if day_str:
-        try:
-            day = datetime.strptime(day_str, "%Y-%m-%d").date()
-        except Exception:
-            day = date.today()
-    else:
-        day = date.today()
-
-    return render_template_string(ADMIN_HTML, user=session.get("user"), day=day.strftime("%Y-%m-%d"))
+    return render_template_string(ADMIN_HTML, user=session.get("user"))
 
 
 @app.get("/admin/stats")
 @login_required(["admin"])
 @handle_errors
 def admin_stats():
-    # Permite filtrar por dia (YYYY-MM-DD)
-    day_str = (request.args.get("day") or "").strip()
-    if day_str:
-        try:
-            day = datetime.strptime(day_str, "%Y-%m-%d").date()
-        except Exception:
-            day = date.today()
-    else:
-        day = date.today()
-
-    start_month = day.replace(day=1)
-
-    # Próximo mês (para fechar o intervalo [start_month, next_month))
-    if start_month.month == 12:
-        next_month = date(start_month.year + 1, 1, 1)
-    else:
-        next_month = date(start_month.year, start_month.month + 1, 1)
-
-    # Mês anterior
-    if start_month.month == 1:
-        prev_month_start = date(start_month.year - 1, 12, 1)
-    else:
-        prev_month_start = date(start_month.year, start_month.month - 1, 1)
-    prev_month_end = start_month  # exclusivo
-
-    next7 = day + timedelta(days=7)
+    today = date.today()
+    start_month = today.replace(day=1)
+    next7 = today + timedelta(days=7)
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            # Indicadores operacionais (mantidos para outras telas/uso futuro)
+            # KPI: pendentes hoje (serviços)
             cur.execute(
                 """
                 SELECT COUNT(*)::int AS c
@@ -1037,10 +544,11 @@ def admin_stats():
                 WHERE p.data_prevista = %s
                   AND COALESCE(ps.status,'') <> 'Concluído'
                 """,
-                (day,),
+                (today,),
             )
             pending_today = cur.fetchone()["c"]
 
+            # KPI: concluídos hoje (serviços)
             cur.execute(
                 """
                 SELECT COUNT(*)::int AS c
@@ -1048,10 +556,11 @@ def admin_stats():
                 WHERE status = 'Concluído'
                   AND data_conclusao::date = %s
                 """,
-                (day,),
+                (today,),
             )
             completed_today = cur.fetchone()["c"]
 
+            # KPI: atrasados (serviços pendentes com data prevista < hoje)
             cur.execute(
                 """
                 SELECT COUNT(*)::int AS c
@@ -1060,111 +569,143 @@ def admin_stats():
                 WHERE p.data_prevista < %s
                   AND COALESCE(ps.status,'') <> 'Concluído'
                 """,
-                (day,),
+                (today,),
             )
             overdue = cur.fetchone()["c"]
 
+            # KPI: pedidos criados hoje
             cur.execute(
                 """
                 SELECT COUNT(*)::int AS c
                 FROM pedidos
                 WHERE data_entrada::date = %s
                 """,
-                (day,),
+                (today,),
             )
             orders_today = cur.fetchone()["c"]
 
-            # Vendas (OT+FR) e "Somente FR" (include_nif=true)
+            # KPI: faturamento hoje (se preco_total existir)
             cur.execute(
                 """
-                SELECT COALESCE(SUM(preco_total),0)::numeric AS v
+                SELECT COALESCE(SUM(preco_total),0)::float AS v
                 FROM pedidos
                 WHERE data_entrada::date = %s
                 """,
-                (day,),
+                (today,),
             )
-            sales_day_all = float(cur.fetchone()["v"] or 0)
+            revenue_today = float(cur.fetchone()["v"] or 0)
 
+            # KPI: faturamento mês
             cur.execute(
                 """
-                SELECT COALESCE(SUM(preco_total),0)::numeric AS v
-                FROM pedidos
-                WHERE data_entrada::date = %s
-                  AND include_nif = true
-                """,
-                (day,),
-            )
-            sales_day_fr = float(cur.fetchone()["v"] or 0)
-
-            cur.execute(
-                """
-                SELECT COALESCE(SUM(preco_total),0)::numeric AS v
+                SELECT COALESCE(SUM(preco_total),0)::float AS v
                 FROM pedidos
                 WHERE data_entrada::date >= %s
-                  AND data_entrada::date < %s
+                  AND data_entrada::date <= %s
                 """,
-                (start_month, next_month),
+                (start_month, today),
             )
-            sales_month_all = float(cur.fetchone()["v"] or 0)
+            revenue_month = float(cur.fetchone()["v"] or 0)
 
+            # LISTA: atrasados (top 10 por pedido)
             cur.execute(
                 """
-                SELECT COALESCE(SUM(preco_total),0)::numeric AS v
-                FROM pedidos
-                WHERE data_entrada::date >= %s
-                  AND data_entrada::date < %s
-                  AND include_nif = true
+                SELECT
+                  p.id_pedido,
+                  c.name AS client_name,
+                  p.data_prevista,
+                  p.preco_total,
+                  (
+                    SELECT COUNT(*)::int
+                    FROM pedido_servicos ps2
+                    WHERE ps2.id_pedido = p.id_pedido
+                      AND COALESCE(ps2.status,'') <> 'Concluído'
+                  ) AS pendentes
+                FROM pedidos p
+                JOIN clients c ON c.id_client = p.id_client
+                WHERE p.data_prevista < %s
+                  AND COALESCE(p.status,'') <> 'Concluído'
+                ORDER BY p.data_prevista ASC, p.id_pedido ASC
+                LIMIT 10
                 """,
-                (start_month, next_month),
+                (today,),
             )
-            sales_month_fr = float(cur.fetchone()["v"] or 0)
+            list_overdue = cur.fetchall()
 
-            # Mês anterior (comparação)
+            # LISTA: próximos 7 dias (top 10)
             cur.execute(
                 """
-                SELECT COALESCE(SUM(preco_total),0)::numeric AS v
-                FROM pedidos
-                WHERE data_entrada::date >= %s
-                  AND data_entrada::date < %s
+                SELECT
+                  p.id_pedido,
+                  c.name AS client_name,
+                  p.data_prevista,
+                  p.preco_total,
+                  (
+                    SELECT COUNT(*)::int
+                    FROM pedido_servicos ps2
+                    WHERE ps2.id_pedido = p.id_pedido
+                      AND COALESCE(ps2.status,'') <> 'Concluído'
+                  ) AS pendentes
+                FROM pedidos p
+                JOIN clients c ON c.id_client = p.id_client
+                WHERE p.data_prevista >= %s
+                  AND p.data_prevista <= %s
+                  AND COALESCE(p.status,'') <> 'Concluído'
+                ORDER BY p.data_prevista ASC, p.id_pedido ASC
+                LIMIT 10
                 """,
-                (prev_month_start, prev_month_end),
+                (today, next7),
             )
-            sales_prev_month_all = float(cur.fetchone()["v"] or 0)
+            list_next7 = cur.fetchall()
 
+            # LISTA: últimos pedidos (top 10)
             cur.execute(
                 """
-                SELECT COALESCE(SUM(preco_total),0)::numeric AS v
-                FROM pedidos
-                WHERE data_entrada::date >= %s
-                  AND data_entrada::date < %s
-                  AND include_nif = true
-                """,
-                (prev_month_start, prev_month_end),
+                SELECT
+                  p.id_pedido,
+                  c.name AS client_name,
+                  p.data_prevista,
+                  p.preco_total,
+                  (
+                    SELECT COUNT(*)::int
+                    FROM pedido_servicos ps2
+                    WHERE ps2.id_pedido = p.id_pedido
+                      AND COALESCE(ps2.status,'') <> 'Concluído'
+                  ) AS pendentes
+                FROM pedidos p
+                JOIN clients c ON c.id_client = p.id_client
+                ORDER BY p.id_pedido DESC
+                LIMIT 10
+                """
             )
-            sales_prev_month_fr = float(cur.fetchone()["v"] or 0)
+            list_latest = cur.fetchall()
 
-    def pct_change(cur_v: float, prev_v: float) -> float:
-        if prev_v == 0:
-            return 0.0 if cur_v == 0 else 100.0
-        return ((cur_v - prev_v) / prev_v) * 100.0
+    def _pedido_list_row(r: dict) -> dict:
+        dp = r.get("data_prevista")
+        dp_str = dp.strftime("%Y-%m-%d") if isinstance(dp, (date, datetime)) else None
+        return {
+            "id_pedido": r.get("id_pedido"),
+            "client_name": r.get("client_name"),
+            "data_prevista": dp_str,
+            "preco_total": float(r.get("preco_total") or 0) if r.get("preco_total") is not None else None,
+            "pendentes": r.get("pendentes"),
+        }
 
     return jsonify(
         {
-            "day": day.strftime("%Y-%m-%d"),
-            "month": start_month.strftime("%Y-%m"),
-            "pending_today": pending_today,
-            "completed_today": completed_today,
-            "overdue": overdue,
-            "orders_today": orders_today,
-
-            "sales_day_all": sales_day_all,
-            "sales_day_fr": sales_day_fr,
-            "sales_month_all": sales_month_all,
-            "sales_month_fr": sales_month_fr,
-            "sales_prev_month_all": sales_prev_month_all,
-            "sales_prev_month_fr": sales_prev_month_fr,
-            "pct_month_all": pct_change(sales_month_all, sales_prev_month_all),
-            "pct_month_fr": pct_change(sales_month_fr, sales_prev_month_fr),
+            "kpis": {
+                "pending_today": pending_today,
+                "completed_today": completed_today,
+                "overdue": overdue,
+                "orders_today": orders_today,
+                "revenue_today": revenue_today,
+                "revenue_month": revenue_month,
+            },
+            "lists": {
+                "overdue": [_pedido_list_row(x) for x in list_overdue],
+                "next7": [_pedido_list_row(x) for x in list_next7],
+                "latest": [_pedido_list_row(x) for x in list_latest],
+            },
         }
     ), 200
 
@@ -1180,6 +721,7 @@ def serve_main_page():
 @login_required(["admin"])
 @handle_errors
 def serve_management_page():
+    # atenção: seu arquivo no GitHub está "Gerenciamento.html" (G maiúsculo)
     return render_template("Gerenciamento.html")
 
 
@@ -1191,8 +733,390 @@ def serve_seamstress_page():
 
 
 # -----------------------------------------------------------------------------
-# APIs do Painel Costureiras
+# API - Clients
 # -----------------------------------------------------------------------------
+@app.get("/clients/<phone>")
+@login_required(["admin", "caixa"])
+@handle_errors
+def get_client_by_phone(phone):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id_client, name, nif FROM clients WHERE phone = %s",
+                (phone,),
+            )
+            row = cur.fetchone()
+
+    if row:
+        return jsonify({"id": row["id_client"], "name": row["name"], "nif": row["nif"]}), 200
+    return jsonify({"error": "Cliente não encontrado."}), 404
+
+
+@app.get("/clients/search")
+@login_required(["admin", "caixa"])
+@handle_errors
+def search_clients():
+    """Busca por telefone (parcial) ou nome.
+    Query param: ?q=...
+    Retorna lista (máx 20).
+    """
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"results": []}), 200
+
+    q_digits = "".join([c for c in q if c.isdigit()])
+    like_name = f"%{q}%"
+    like_phone = f"%{q_digits}%" if q_digits else None
+
+    sql = "SELECT id_client, name, phone, nif FROM clients WHERE "
+    params = []
+
+    if like_phone:
+        sql += "(phone ILIKE %s) OR (name ILIKE %s) "
+        params.extend([like_phone, like_name])
+    else:
+        sql += "name ILIKE %s "
+        params.append(like_name)
+
+    sql += "ORDER BY name ASC LIMIT 20"
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall() or []
+
+    return jsonify(
+        {
+            "results": [
+                {"id": r["id_client"], "name": r["name"], "phone": r["phone"], "nif": r["nif"]}
+                for r in rows
+            ]
+        }
+    ), 200
+
+
+
+@app.post("/clients")
+@login_required(["admin", "caixa"])
+@handle_errors
+def add_client():
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    nif = (data.get("nif") or "").strip() or None
+
+    if not name or not phone:
+        return jsonify({"error": "Nome e telefone são obrigatórios."}), 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO clients (name, phone, nif) VALUES (%s, %s, %s) RETURNING id_client",
+                (name, phone, nif),
+            )
+            new_id = cur.fetchone()["id_client"]
+        conn.commit()
+
+    return jsonify({"message": "Cliente cadastrado com sucesso", "id": new_id}), 201
+
+
+@app.put("/clients/<int:client_id>/nif")
+@login_required(["admin", "caixa"])
+@handle_errors
+def update_client_nif(client_id):
+    data = request.get_json(force=True) or {}
+    nif = (data.get("nif") or "").strip()
+    if not nif:
+        return jsonify({"error": "O NIF é obrigatório."}), 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE clients SET nif = %s WHERE id_client = %s",
+                (nif, client_id),
+            )
+            updated = cur.rowcount
+        conn.commit()
+
+    if updated == 0:
+        return jsonify({"error": "Cliente não encontrado."}), 404
+    return jsonify({"message": "NIF atualizado com sucesso."}), 200
+
+
+@app.get("/clients/by-id/<int:client_id>")
+@login_required(["admin", "caixa"])
+@handle_errors
+def get_client_by_id(client_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id_client, name, phone, nif FROM clients WHERE id_client = %s",
+                (client_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return jsonify({"error": "Cliente não encontrado."}), 404
+
+    return jsonify(
+        {"id": row["id_client"], "name": row["name"], "phone": row["phone"], "nif": row["nif"]}
+    ), 200
+
+
+@app.put("/clients/by-id/<int:client_id>")
+@login_required(["admin", "caixa"])
+@handle_errors
+def update_client_by_id(client_id):
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    nif = (data.get("nif") or "").strip() or None
+
+    if not name or not phone:
+        return jsonify({"error": "Nome e telefone são obrigatórios."}), 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # Impede duplicação de telefone em outro cliente
+            cur.execute(
+                "SELECT id_client FROM clients WHERE phone = %s AND id_client <> %s",
+                (phone, client_id),
+            )
+            exists = cur.fetchone()
+            if exists:
+                return jsonify({"error": "Já existe outro cliente com este telefone."}), 409
+
+            cur.execute(
+                "UPDATE clients SET name = %s, phone = %s, nif = %s WHERE id_client = %s",
+                (name, phone, nif, client_id),
+            )
+            updated = cur.rowcount
+        conn.commit()
+
+    if updated == 0:
+        return jsonify({"error": "Cliente não encontrado."}), 404
+
+    return jsonify({"message": "Cliente atualizado com sucesso."}), 200
+
+
+
+# -----------------------------------------------------------------------------
+# API - Services (CRUD)
+# -----------------------------------------------------------------------------
+@app.get("/services")
+@login_required(["admin", "caixa"])
+@handle_errors
+def get_services():
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id_service, name, price, category FROM services ORDER BY category, name"
+            )
+            rows = cur.fetchall()
+
+    services_by_category: dict[str, list[dict]] = {}
+    for r in rows:
+        cat = r["category"]
+        services_by_category.setdefault(cat, []).append(
+            {"id": r["id_service"], "nome": r["name"], "preco": float(r["price"])}
+        )
+    return jsonify(services_by_category), 200
+
+
+@app.post("/services")
+@login_required(["admin"])
+@handle_errors
+def add_service():
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    category = (data.get("category") or "").strip()
+    price = data.get("price")
+
+    if not name or not category or price is None:
+        return jsonify({"error": "Nome, categoria e preço são obrigatórios."}), 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO services (name, category, price) VALUES (%s, %s, %s) RETURNING id_service",
+                (name, category, float(price)),
+            )
+            new_id = cur.fetchone()["id_service"]
+        conn.commit()
+
+    return jsonify({"message": "Serviço adicionado com sucesso", "id": new_id}), 201
+
+
+@app.put("/services/<int:service_id>")
+@login_required(["admin"])
+@handle_errors
+def update_service(service_id):
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    category = (data.get("category") or "").strip()
+    price = data.get("price")
+
+    if not name or not category or price is None:
+        return jsonify({"error": "Nome, categoria e preço são obrigatórios."}), 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE services SET name=%s, category=%s, price=%s WHERE id_service=%s",
+                (name, category, float(price), service_id),
+            )
+            updated = cur.rowcount
+        conn.commit()
+
+    if updated == 0:
+        return jsonify({"error": "Serviço não encontrado."}), 404
+    return jsonify({"message": "Serviço atualizado com sucesso"}), 200
+
+
+@app.delete("/services/<int:service_id>")
+@login_required(["admin"])
+@handle_errors
+def delete_service(service_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM services WHERE id_service=%s", (service_id,))
+            deleted = cur.rowcount
+        conn.commit()
+
+    if deleted == 0:
+        return jsonify({"error": "Serviço não encontrado."}), 404
+    return jsonify({"message": "Serviço apagado com sucesso"}), 200
+
+
+# -----------------------------------------------------------------------------
+# API - Seamstresses (CRUD)
+# -----------------------------------------------------------------------------
+@app.get("/seamstresses")
+@login_required(["admin", "costureira"])
+@handle_errors
+def get_seamstresses():
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id_seamstress, name FROM seamstresses ORDER BY name")
+            rows = cur.fetchall()
+    return jsonify([{"id": r["id_seamstress"], "name": r["name"]} for r in rows]), 200
+
+
+@app.post("/seamstresses")
+@login_required(["admin"])
+@handle_errors
+def add_seamstress():
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "O nome é obrigatório."}), 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO seamstresses (name) VALUES (%s) RETURNING id_seamstress",
+                (name,),
+            )
+            new_id = cur.fetchone()["id_seamstress"]
+        conn.commit()
+
+    return jsonify({"message": "Costureira adicionada com sucesso", "id": new_id}), 201
+
+
+@app.put("/seamstresses/<int:seamstress_id>")
+@login_required(["admin"])
+@handle_errors
+def update_seamstress(seamstress_id):
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "O nome é obrigatório."}), 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE seamstresses SET name=%s WHERE id_seamstress=%s",
+                (name, seamstress_id),
+            )
+            updated = cur.rowcount
+        conn.commit()
+
+    if updated == 0:
+        return jsonify({"error": "Costureira não encontrada."}), 404
+    return jsonify({"message": "Costureira atualizada com sucesso"}), 200
+
+
+@app.delete("/seamstresses/<int:seamstress_id>")
+@login_required(["admin"])
+@handle_errors
+def delete_seamstress(seamstress_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM seamstresses WHERE id_seamstress=%s", (seamstress_id,))
+            deleted = cur.rowcount
+        conn.commit()
+
+    if deleted == 0:
+        return jsonify({"error": "Costureira não encontrada."}), 404
+    return jsonify({"message": "Costureira apagada com sucesso"}), 200
+
+
+# -----------------------------------------------------------------------------
+# API - Pedidos
+# -----------------------------------------------------------------------------
+@app.post("/pedidos")
+@login_required(["admin", "caixa"])
+@handle_errors
+def criar_pedido():
+    """
+    Espera o payload do atendimento.html:
+    {
+      clientId, deliveryDate, comments, discount, totalPrice,
+      services: [{id, quantity, description, preco, nome}]
+    }
+    """
+    data = request.get_json(force=True) or {}
+
+    client_id = data.get("clientId")
+    delivery_date = data.get("deliveryDate")
+    comments = data.get("comments")
+    discount = float(data.get("discount") or 0)
+    total_price = float(data.get("totalPrice") or 0)
+    include_nif = bool(data.get("include_nif") or data.get("includeNif") or False)
+    services = data.get("services") or []
+
+    if not client_id or not delivery_date or not services:
+        return jsonify({"error": "clientId, deliveryDate e services são obrigatórios."}), 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif)
+                VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
+                RETURNING id_pedido
+                """,
+                (int(client_id), delivery_date, comments, discount, total_price, "Pendente", include_nif),
+            )
+            pedido_id = cur.fetchone()["id_pedido"]
+
+            for s in services:
+                service_id = s.get("id")
+                qty = int(s.get("quantity") or 1)
+                desc = s.get("description")
+                cur.execute(
+                    """
+                    INSERT INTO pedido_servicos (id_pedido, id_service, quantity, description, status)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (pedido_id, int(service_id), qty, desc, "Pendente"),
+                )
+
+        conn.commit()
+
+    return jsonify({"message": "Pedido criado com sucesso", "pedido_id": pedido_id}), 201
+
+
 @app.get("/pedidos/stats")
 @login_required(["admin", "costureira"])
 @handle_errors
@@ -1227,6 +1151,138 @@ def pedidos_stats():
             completed_today = cur.fetchone()["c"]
 
     return jsonify({"pending_today": pending_today, "completed_today": completed_today}), 200
+
+
+@app.route("/pedidos/recentes", methods=["GET"])
+@login_required(["admin", "caixa"])
+@handle_errors
+def pedidos_recentes():
+    """Lista serviços/pedidos dos últimos N meses (default=3).
+    Filtros:
+      - ?q=...  (nome/telefone/nif/pedido_id)
+      - ?only_nif=1  (somente pedidos com include_nif=true)
+    """
+    months = int(request.args.get("months") or 3)
+    q = (request.args.get("q") or "").strip()
+    only_nif = (request.args.get("only_nif") or "").strip() in ("1", "true", "True", "yes", "sim")
+
+    start_date = (date.today() - timedelta(days=30 * months))
+
+    sql = """
+      SELECT
+        p.id_pedido,
+        p.data_entrada,
+        p.data_prevista,
+        p.preco_total,
+        p.desconto,
+        p.include_nif,
+        p.observacoes,
+        c.id_client,
+        c.name AS client_name,
+        c.phone AS client_phone,
+        c.nif AS client_nif,
+        ps.id_pedido_servico,
+        ps.quantity,
+        ps.description,
+        ps.status,
+        s.name AS service_name
+      FROM pedidos p
+      JOIN clients c ON c.id_client = p.id_client
+      JOIN pedido_servicos ps ON ps.id_pedido = p.id_pedido
+      JOIN services s ON s.id_service = ps.id_service
+      WHERE p.data_entrada::date >= %s
+    """
+    params = [start_date]
+
+    if only_nif:
+        sql += " AND p.include_nif = true "
+
+    if q:
+        if q.isdigit():
+            # pedido_id exato ou telefone parcial
+            sql += " AND (p.id_pedido = %s OR c.phone ILIKE %s) "
+            params.extend([int(q), f"%{q}%"])
+        else:
+            sql += " AND (c.name ILIKE %s OR c.phone ILIKE %s OR COALESCE(c.nif,'') ILIKE %s) "
+            params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
+
+    sql += " ORDER BY p.data_entrada DESC, p.id_pedido DESC, ps.id_pedido_servico ASC "
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall() or []
+
+    # agrupar por pedido
+    pedidos = {}
+    for r in rows:
+        pid = r["id_pedido"]
+        if pid not in pedidos:
+            de = r["data_entrada"]
+            dp = r["data_prevista"]
+            pedidos[pid] = {
+                "id_pedido": pid,
+                "data_entrada": de.strftime("%Y-%m-%d %H:%M") if isinstance(de, datetime) else str(de),
+                "data_prevista": dp.strftime("%Y-%m-%d") if isinstance(dp, (datetime, date)) else str(dp),
+                "preco_total": float(r["preco_total"] or 0),
+                "desconto": float(r["desconto"] or 0),
+                "include_nif": bool(r["include_nif"]),
+                "observacoes": r.get("observacoes") or "",
+                "client": {
+                    "id": r["id_client"],
+                    "name": r["client_name"],
+                    "phone": r["client_phone"],
+                    "nif": r["client_nif"],
+                },
+                "services": [],
+            }
+        pedidos[pid]["services"].append(
+            {
+                "id_pedido_servico": r["id_pedido_servico"],
+                "service_name": r["service_name"],
+                "quantity": int(r["quantity"] or 1),
+                "description": r.get("description") or "",
+                "status": r.get("status") or "",
+            }
+        )
+
+    return jsonify({"start_date": start_date.strftime("%Y-%m-%d"), "results": list(pedidos.values())}), 200
+
+
+
+def _service_row_to_payload(r: dict) -> dict:
+    data_prevista = r.get("data_prevista")
+    if isinstance(data_prevista, (datetime, date)):
+        data_prevista_str = data_prevista.strftime("%Y-%m-%d")
+    else:
+        data_prevista_str = None
+
+    data_conclusao = r.get("data_conclusao")
+    if isinstance(data_conclusao, datetime):
+        data_conclusao_str = data_conclusao.strftime("%Y-%m-%d %H:%M")
+    else:
+        data_conclusao_str = None
+
+    return {
+        "id_pedido_servico": r["id_pedido_servico"],
+        "id_pedido": r["id_pedido"],
+        "service_name": r["service_name"],
+        "client_name": r["client_name"],
+        "quantity": r["quantity"],
+        "status": r.get("status"),
+        "data_prevista": data_prevista_str,
+        "costureira_conclusao": r.get("costureira_conclusao"),
+        "data_conclusao": data_conclusao_str,
+    }
+
+
+
+@app.route("/pedidos/recentes2months", methods=["GET"])
+@login_required(["admin", "caixa"])
+@handle_errors
+def pedidos_recentes_alias():
+    # compat: alguns clientes podem chamar este endpoint antigo
+    return pedidos_recentes()
 
 @app.get("/pedidos/pendentes")
 @login_required(["admin", "costureira"])
@@ -1339,681 +1395,60 @@ def pedidos_pendentes():
     return jsonify({"atrasados": atrasados, "hoje": hoje, "proximos": proximos}), 200
 
 
-
-# -----------------------------------------------------------------------------
-# Controle de Caixa - Páginas e APIs
-# -----------------------------------------------------------------------------
-def _parse_day(s: str | None) -> date:
-    if not s:
-        return date.today()
-    try:
-        return datetime.strptime(s, "%Y-%m-%d").date()
-    except Exception:
-        return date.today()
-
-
-def _month_range(month_str: str) -> tuple[date, date]:
-    # month_str: YYYY-MM
-    y, m = month_str.split("-", 1)
-    y = int(y)
-    m = int(m)
-    start = date(y, m, 1)
-    if m == 12:
-        end = date(y + 1, 1, 1)
-    else:
-        end = date(y, m + 1, 1)
-    return start, end
-
-
-def _caixa_totals_for_day(day: date) -> dict:
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                  COALESCE(SUM(CASE WHEN paid_by_card THEN preco_total ELSE 0 END),0)::float AS total_card,
-                  COALESCE(SUM(CASE WHEN NOT paid_by_card THEN preco_total ELSE 0 END),0)::float AS total_cash,
-                  COALESCE(SUM(CASE WHEN include_nif THEN preco_total ELSE 0 END),0)::float AS total_with_nif,
-                  COALESCE(SUM(CASE WHEN NOT include_nif THEN preco_total ELSE 0 END),0)::float AS total_without_nif
-                FROM pedidos
-                WHERE data_entrada::date = %s
-                """,
-                (day,),
-            )
-            r = cur.fetchone() or {}
-    return {
-        "total_card": float(r.get("total_card") or 0),
-        "total_cash": float(r.get("total_cash") or 0),
-        "total_with_nif": float(r.get("total_with_nif") or 0),
-        "total_without_nif": float(r.get("total_without_nif") or 0),
-    }
-
-
-@app.get("/controle-caixa")
-@login_required(["admin"])
-def controle_caixa_page():
-    day = _parse_day(request.args.get("day"))
-    # mês default = mês do day
-    month = f"{day.year:04d}-{day.month:02d}"
-    return render_template_string(
-        CONTROLE_CAIXA_HTML,
-        user=session.get("user"),
-        day=day.strftime("%Y-%m-%d"),
-        month=month,
-    )
-
-
-@app.get("/exportacoes-caixa")
-@login_required(["admin"])
-def exportacoes_caixa_page():
-    today = date.today()
-    month = request.args.get("month") or f"{today.year:04d}-{today.month:02d}"
-    return render_template_string(EXPORTACOES_CAIXA_HTML, user=session.get("user"), month=month)
-
-
-@app.get("/controle-caixa/data")
-@login_required(["admin"])
-@handle_errors
-def controle_caixa_data():
-    day = _parse_day(request.args.get("day"))
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                  p.id_pedido,
-                  to_char(p.data_entrada, 'HH24:MI') AS time,
-                  p.preco_total,
-                  p.include_nif,
-                  p.paid_by_card,
-                  c.name AS client_name
-                FROM pedidos p
-                JOIN clients c ON c.id_client = p.id_client
-                WHERE p.data_entrada::date = %s
-                ORDER BY p.id_pedido DESC
-                """,
-                (day,),
-            )
-            rows = cur.fetchall() or []
-
-    return jsonify({"rows": rows, "totals": _caixa_totals_for_day(day)}), 200
-
-
-@app.get("/controle-caixa/totals")
-@login_required(["admin"])
-@handle_errors
-def controle_caixa_totals():
-    day = _parse_day(request.args.get("day"))
-    return jsonify(_caixa_totals_for_day(day)), 200
-
-
-@app.get("/controle-caixa/export")
-@login_required(["admin"])
-@handle_errors
-def controle_caixa_export():
-    month = (request.args.get("month") or "").strip()  # YYYY-MM
-    if not month or len(month) != 7 or "-" not in month:
-        # fallback: mês atual
-        today = date.today()
-        month = f"{today.year:04d}-{today.month:02d}"
-
-    start, end = _month_range(month)
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                  p.id_pedido,
-                  to_char(p.data_entrada, 'YYYY-MM-DD HH24:MI:SS') AS data_entrada,
-                  c.name AS cliente,
-                  c.phone AS telefone,
-                  p.include_nif,
-                  p.paid_by_card,
-                  p.preco_total,
-                  p.desconto,
-                  COALESCE(p.observacoes,'') AS observacoes
-                FROM pedidos p
-                JOIN clients c ON c.id_client = p.id_client
-                WHERE p.data_entrada::date >= %s
-                  AND p.data_entrada::date < %s
-                ORDER BY p.id_pedido ASC
-                """,
-                (start, end),
-            )
-            rows = cur.fetchall() or []
-
-    output = io.StringIO()
-    writer = csv.writer(output, delimiter=";")
-    writer.writerow(
-        [
-            "id_pedido",
-            "data_entrada",
-            "cliente",
-            "telefone",
-            "include_nif",
-            "paid_by_card",
-            "preco_total",
-            "desconto",
-            "observacoes",
-        ]
-    )
-    for r in rows:
-        writer.writerow(
-            [
-                r.get("id_pedido"),
-                r.get("data_entrada"),
-                r.get("cliente"),
-                r.get("telefone"),
-                "1" if r.get("include_nif") else "0",
-                "1" if r.get("paid_by_card") else "0",
-                f"{float(r.get('preco_total') or 0):.2f}".replace(".", ","),
-                f"{float(r.get('desconto') or 0):.2f}".replace(".", ","),
-                r.get("observacoes", ""),
-            ]
-        )
-
-    csv_data = output.getvalue().encode("utf-8-sig")  # BOM para Excel PT
-    filename = f"controle_caixa_{month}.csv"
-    return Response(
-        csv_data,
-        mimetype="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-
-
-
-
-@app.get("/exportacoes-caixa/detalhado")
-@login_required(["admin"])
-@handle_errors
-def exportacoes_caixa_detalhado():
-    month = (request.args.get("month") or "").strip()  # YYYY-MM
-    if not month or len(month) != 7 or "-" not in month:
-        today = date.today()
-        month = f"{today.year:04d}-{today.month:02d}"
-
-    start, end = _month_range(month)
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    p.id_pedido,
-                    p.data_entrada::date AS dia,
-                    c.name AS nome,
-                    CASE
-                        WHEN p.include_nif = true
-                             AND c.nif IS NOT NULL
-                             AND c.nif <> ''
-                        THEN c.nif
-                        ELSE ''
-                    END AS nif,
-                    p.paid_by_card,
-                    STRING_AGG(
-                        s.name || ' x' || COALESCE(ps.quantity,1)::text ||
-                        CASE
-                            WHEN ps.description IS NOT NULL
-                                 AND ps.description <> ''
-                            THEN ' (' || ps.description || ')'
-                            ELSE ''
-                        END,
-                        ' | '
-                        ORDER BY s.name
-                    ) AS servicos,
-                    p.preco_total
-                FROM pedidos p
-                JOIN clients c ON c.id_client = p.id_client
-                LEFT JOIN pedido_servicos ps ON ps.id_pedido = p.id_pedido
-                LEFT JOIN services s ON s.id_service = ps.id_service
-                WHERE p.data_entrada::date >= %s
-                  AND p.data_entrada::date <  %s
-                GROUP BY
-                    p.id_pedido,
-                    p.data_entrada::date,
-                    c.name,
-                    c.nif,
-                    p.include_nif,
-                    p.paid_by_card,
-                    p.preco_total
-                ORDER BY
-                    p.data_entrada::date ASC,
-                    p.id_pedido ASC
-                """,
-                (start, end),
-            )
-            rows = cur.fetchall() or []
-
-    output = io.StringIO()
-    writer = csv.writer(output, delimiter=";")
-    writer.writerow(["dia", "nome", "nif", "cartao", "servicos", "valor_total_eur", "iva_23", "moeda"])
-
-    for r in rows:
-        total = Decimal(str(r.get("preco_total") or 0))
-        iva = (total - (total / Decimal("1.23"))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-        writer.writerow(
-            [
-                r.get("dia").strftime("%Y-%m-%d") if r.get("dia") else "",
-                r.get("nome") or "",
-                r.get("nif") or "",
-                "1" if r.get("paid_by_card") else "0",
-                r.get("servicos") or "",
-                f'="{total:.2f}"',
-                f'="{iva:.2f}"',
-                "EUR",
-            ]
-        )
-
-
-
-    csv_data = output.getvalue().encode("utf-8-sig")
-    filename = f"export_caixa_detalhado_{month}.csv"
-    return Response(
-        csv_data,
-        mimetype="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-
-@app.put("/pedidos/<int:pedido_id>/payment")
-@login_required(["admin"])
-@handle_errors
-def set_payment(pedido_id: int):
-    data = request.get_json(force=True) or {}
-    paid_by_card = bool(data.get("paid_by_card") or data.get("paidByCard") or False)
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE pedidos SET paid_by_card = %s WHERE id_pedido = %s",
-                (paid_by_card, pedido_id),
-            )
-            updated = cur.rowcount
-        conn.commit()
-
-    if updated == 0:
-        return jsonify({"error": "Pedido não encontrado."}), 404
-    return jsonify({"ok": True, "pedido_id": pedido_id, "paid_by_card": paid_by_card}), 200
-
-
-@app.delete("/pedidos/<int:pedido_id>")
-@login_required(["admin"])
-@handle_errors
-def delete_pedido(pedido_id: int):
-    # Apaga primeiro filhos para não violar FK
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM pedido_servicos WHERE id_pedido = %s", (pedido_id,))
-            cur.execute("DELETE FROM pedidos WHERE id_pedido = %s", (pedido_id,))
-            deleted = cur.rowcount
-        conn.commit()
-
-    if deleted == 0:
-        return jsonify({"error": "Pedido não encontrado."}), 404
-    return jsonify({"ok": True, "pedido_id": pedido_id}), 200
-
-
-# -----------------------------------------------------------------------------
-# API - Clients
-# -----------------------------------------------------------------------------
-@app.get("/clients/<phone>")
-@login_required(["admin", "caixa"])
-@handle_errors
-def get_client_by_phone(phone):
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id_client, name, nif FROM clients WHERE phone = %s", (phone,))
-            row = cur.fetchone()
-
-    if row:
-        return jsonify({"id": row["id_client"], "name": row["name"], "nif": row["nif"]}), 200
-    return jsonify({"error": "Cliente não encontrado."}), 404
-
-
-@app.get("/clients/search")
-@login_required(["admin", "caixa"])
-@handle_errors
-def search_clients():
-    q = (request.args.get("q") or "").strip()
-    if not q:
-        return jsonify({"results": []}), 200
-
-    q_digits = "".join([c for c in q if c.isdigit()])
-    like_name = f"%{q}%"
-    like_phone = f"%{q_digits}%" if q_digits else None
-
-    sql = "SELECT id_client, name, phone, nif FROM clients WHERE "
-    params = []
-
-    if like_phone:
-        sql += "(phone ILIKE %s) OR (name ILIKE %s) "
-        params.extend([like_phone, like_name])
-    else:
-        sql += "name ILIKE %s "
-        params.append(like_name)
-
-    sql += "ORDER BY name ASC LIMIT 20"
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, tuple(params))
-            rows = cur.fetchall() or []
-
-    return (
-        jsonify(
-            {
-                "results": [
-                    {"id": r["id_client"], "name": r["name"], "phone": r["phone"], "nif": r["nif"]}
-                    for r in rows
-                ]
-            }
-        ),
-        200,
-    )
-
-
-@app.post("/clients")
-@login_required(["admin", "caixa"])
-@handle_errors
-def add_client():
-    data = request.get_json(force=True) or {}
-    name = (data.get("name") or "").strip()
-    phone = (data.get("phone") or "").strip()
-    nif = (data.get("nif") or "").strip() or None
-
-    if not name or not phone:
-        return jsonify({"error": "Nome e telefone são obrigatórios."}), 400
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO clients (name, phone, nif) VALUES (%s, %s, %s) RETURNING id_client",
-                (name, phone, nif),
-            )
-            new_id = cur.fetchone()["id_client"]
-        conn.commit()
-
-    return jsonify({"message": "Cliente cadastrado com sucesso", "id": new_id}), 201
-
-
-@app.put("/clients/<int:client_id>/nif")
-@login_required(["admin", "caixa"])
-@handle_errors
-def update_client_nif(client_id):
-    data = request.get_json(force=True) or {}
-    nif = (data.get("nif") or "").strip()
-    if not nif:
-        return jsonify({"error": "O NIF é obrigatório."}), 400
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE clients SET nif = %s WHERE id_client = %s", (nif, client_id))
-            updated = cur.rowcount
-        conn.commit()
-
-    if updated == 0:
-        return jsonify({"error": "Cliente não encontrado."}), 404
-    return jsonify({"message": "NIF atualizado com sucesso."}), 200
-
-
-@app.get("/clients/by-id/<int:client_id>")
-@login_required(["admin", "caixa"])
-@handle_errors
-def get_client_by_id(client_id):
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id_client, name, phone, nif FROM clients WHERE id_client = %s",
-                (client_id,),
-            )
-            row = cur.fetchone()
-
-    if not row:
-        return jsonify({"error": "Cliente não encontrado."}), 404
-
-    return jsonify({"id": row["id_client"], "name": row["name"], "phone": row["phone"], "nif": row["nif"]}), 200
-
-
-@app.put("/clients/by-id/<int:client_id>")
-@login_required(["admin", "caixa"])
-@handle_errors
-def update_client_by_id(client_id):
-    data = request.get_json(force=True) or {}
-    name = (data.get("name") or "").strip()
-    phone = (data.get("phone") or "").strip()
-    nif = (data.get("nif") or "").strip() or None
-
-    if not name or not phone:
-        return jsonify({"error": "Nome e telefone são obrigatórios."}), 400
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id_client FROM clients WHERE phone = %s AND id_client <> %s",
-                (phone, client_id),
-            )
-            exists = cur.fetchone()
-            if exists:
-                return jsonify({"error": "Já existe outro cliente com este telefone."}), 409
-
-            cur.execute(
-                "UPDATE clients SET name = %s, phone = %s, nif = %s WHERE id_client = %s",
-                (name, phone, nif, client_id),
-            )
-            updated = cur.rowcount
-        conn.commit()
-
-    if updated == 0:
-        return jsonify({"error": "Cliente não encontrado."}), 404
-
-    return jsonify({"message": "Cliente atualizado com sucesso."}), 200
-
-
-# -----------------------------------------------------------------------------
-# API - Services (CRUD)
-# -----------------------------------------------------------------------------
-@app.get("/services")
-@login_required(["admin", "caixa"])
-@handle_errors
-def get_services():
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id_service, name, price, category FROM services ORDER BY category, name")
-            rows = cur.fetchall()
-
-    services_by_category: dict[str, list[dict]] = {}
-    for r in rows:
-        cat = r["category"]
-        services_by_category.setdefault(cat, []).append(
-            {"id": r["id_service"], "nome": r["name"], "preco": float(r["price"])}
-        )
-    return jsonify(services_by_category), 200
-
-
-@app.post("/services")
-@login_required(["admin"])
-@handle_errors
-def add_service():
-    data = request.get_json(force=True) or {}
-    name = (data.get("name") or "").strip()
-    category = (data.get("category") or "").strip()
-    price = data.get("price")
-
-    if not name or not category or price is None:
-        return jsonify({"error": "Nome, categoria e preço são obrigatórios."}), 400
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO services (name, category, price) VALUES (%s, %s, %s) RETURNING id_service",
-                (name, category, float(price)),
-            )
-            new_id = cur.fetchone()["id_service"]
-        conn.commit()
-
-    return jsonify({"message": "Serviço adicionado com sucesso", "id": new_id}), 201
-
-
-@app.put("/services/<int:service_id>")
-@login_required(["admin"])
-@handle_errors
-def update_service(service_id):
-    data = request.get_json(force=True) or {}
-    name = (data.get("name") or "").strip()
-    category = (data.get("category") or "").strip()
-    price = data.get("price")
-
-    if not name or not category or price is None:
-        return jsonify({"error": "Nome, categoria e preço são obrigatórios."}), 400
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE services SET name=%s, category=%s, price=%s WHERE id_service=%s",
-                (name, category, float(price), service_id),
-            )
-            updated = cur.rowcount
-        conn.commit()
-
-    if updated == 0:
-        return jsonify({"error": "Serviço não encontrado."}), 404
-    return jsonify({"message": "Serviço atualizado com sucesso"}), 200
-
-
-@app.delete("/services/<int:service_id>")
-@login_required(["admin"])
-@handle_errors
-def delete_service(service_id):
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM services WHERE id_service=%s", (service_id,))
-            deleted = cur.rowcount
-        conn.commit()
-
-    if deleted == 0:
-        return jsonify({"error": "Serviço não encontrado."}), 404
-    return jsonify({"message": "Serviço apagado com sucesso"}), 200
-
-
-# -----------------------------------------------------------------------------
-# API - Seamstresses (CRUD)
-# -----------------------------------------------------------------------------
-@app.get("/seamstresses")
+@app.route("/pedidos/servico/<int:pedido_servico_id>/concluir", methods=["PUT", "POST"])
 @login_required(["admin", "costureira"])
 @handle_errors
-def get_seamstresses():
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id_seamstress, name FROM seamstresses ORDER BY name")
-            rows = cur.fetchall()
-    return jsonify([{"id": r["id_seamstress"], "name": r["name"]} for r in rows]), 200
-
-
-@app.post("/seamstresses")
-@login_required(["admin"])
-@handle_errors
-def add_seamstress():
+def concluir_servico(pedido_servico_id):
+    """
+    Chamado pelo costureiras.html:
+      PUT/POST /pedidos/servico/<id>/concluir
+      body: { id_seamstress: <id> }
+    """
     data = request.get_json(force=True) or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "O nome é obrigatório."}), 400
+    seamstress_id = data.get("id_seamstress")
+    if not seamstress_id:
+        return jsonify({"error": "id_seamstress é obrigatório."}), 400
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO seamstresses (name) VALUES (%s) RETURNING id_seamstress", (name,))
-            new_id = cur.fetchone()["id_seamstress"]
-        conn.commit()
-
-    return jsonify({"message": "Costureira adicionada com sucesso", "id": new_id}), 201
-
-
-@app.put("/seamstresses/<int:seamstress_id>")
-@login_required(["admin"])
-@handle_errors
-def update_seamstress(seamstress_id):
-    data = request.get_json(force=True) or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "O nome é obrigatório."}), 400
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE seamstresses SET name=%s WHERE id_seamstress=%s", (name, seamstress_id))
-            updated = cur.rowcount
-        conn.commit()
-
-    if updated == 0:
-        return jsonify({"error": "Costureira não encontrada."}), 404
-    return jsonify({"message": "Costureira atualizada com sucesso"}), 200
-
-
-@app.delete("/seamstresses/<int:seamstress_id>")
-@login_required(["admin"])
-@handle_errors
-def delete_seamstress(seamstress_id):
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM seamstresses WHERE id_seamstress=%s", (seamstress_id,))
-            deleted = cur.rowcount
-        conn.commit()
-
-    if deleted == 0:
-        return jsonify({"error": "Costureira não encontrada."}), 404
-    return jsonify({"message": "Costureira apagada com sucesso"}), 200
-
-
-# -----------------------------------------------------------------------------
-# API - Pedidos
-# -----------------------------------------------------------------------------
-@app.post("/pedidos")
-@login_required(["admin", "caixa"])
-@handle_errors
-def criar_pedido():
-    data = request.get_json(force=True) or {}
-
-    client_id = data.get("clientId")
-    delivery_date = data.get("deliveryDate")
-    comments = data.get("comments")
-    discount = float(data.get("discount") or 0)
-    total_price = float(data.get("totalPrice") or 0)
-    include_nif = bool(data.get("include_nif") or data.get("includeNif") or False)
-    services = data.get("services") or []
-
-    if not client_id or not delivery_date or not services:
-        return jsonify({"error": "clientId, deliveryDate e services são obrigatórios."}), 400
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
+            # atualiza o serviço
             cur.execute(
                 """
-                INSERT INTO pedidos (id_client, data_entrada, data_prevista, observacoes, desconto, preco_total, status, include_nif)
-                VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
+                UPDATE pedido_servicos
+                SET status='Concluído',
+                    id_seamstress_conclusao=%s,
+                    data_conclusao=NOW()
+                WHERE id_pedido_servico=%s
                 RETURNING id_pedido
                 """,
-                (int(client_id), delivery_date, comments, discount, total_price, "Pendente", include_nif),
+                (int(seamstress_id), pedido_servico_id),
             )
-            pedido_id = cur.fetchone()["id_pedido"]
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"error": "Serviço do pedido não encontrado."}), 404
 
-            for s in services:
-                service_id = s.get("id")
-                qty = int(s.get("quantity") or 1)
-                desc = s.get("description")
+            pedido_id = row["id_pedido"]
+
+            # se todos os serviços do pedido concluídos, marca pedido como concluído
+            cur.execute(
+                """
+                SELECT COUNT(*)::int AS pendentes
+                FROM pedido_servicos
+                WHERE id_pedido=%s
+                  AND COALESCE(status,'') <> 'Concluído'
+                """,
+                (pedido_id,),
+            )
+            pendentes = cur.fetchone()["pendentes"]
+            if pendentes == 0:
                 cur.execute(
-                    """
-                    INSERT INTO pedido_servicos (id_pedido, id_service, quantity, description, status)
-                    VALUES (%s, %s, %s, %s, %s)
-                    """,
-                    (pedido_id, int(service_id), qty, desc, "Pendente"),
+                    "UPDATE pedidos SET status='Concluído' WHERE id_pedido=%s",
+                    (pedido_id,),
                 )
 
         conn.commit()
 
-    return jsonify({"message": "Pedido criado com sucesso", "pedido_id": pedido_id}), 201
+    return jsonify({"message": "Serviço concluído com sucesso.", "pedido_id": pedido_id}), 200
 
 
 # -----------------------------------------------------------------------------
@@ -2022,6 +1457,7 @@ def criar_pedido():
 @app.get("/debug-env")
 @login_required(["admin"])
 def debug_env():
+    # Não expõe senha; só valida se está carregando as envs
     return jsonify(
         {
             "ADMIN_USER": os.environ.get("ADMIN_USER"),
