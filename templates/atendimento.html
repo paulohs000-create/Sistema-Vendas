@@ -215,8 +215,15 @@
                 <label for="service-quantity" class="block text-gray-700 font-medium mb-1">Quantidade</label>
                 <input type="number" id="service-quantity" value="1" min="1" class="w-full px-4 py-2 rounded-lg border border-gray-300">
             </div>
+            
+            <div>
+                <label for="service-price" class="block text-gray-700 font-medium mb-1">Valor do serviço (€)</label>
+                <input type="number" id="service-price" step="0.01" min="0" class="w-full px-4 py-2 rounded-lg border border-gray-300">
+                <p id="service-price-hint" class="text-xs text-gray-500 mt-1">Você pode ajustar o valor (ex.: urgência, complexidade, etc.).</p>
+            </div>
             <div>
                 <label for="service-description" class="block text-gray-700 font-medium mb-1">Descrição Adicional</label>
+ class="block text-gray-700 font-medium mb-1">Descrição Adicional</label>
                 <textarea id="service-description" rows="3" placeholder="Detalhes específicos..." class="w-full px-4 py-2 rounded-lg border border-gray-300"></textarea>
             </div>
             <div class="flex justify-end space-x-4">
@@ -1113,7 +1120,18 @@ const handleClientSearch = async () => {
                 total += itemTotal;
                 const itemDiv = document.createElement('div');
                 itemDiv.className = 'flex justify-between items-center bg-white p-3 rounded-lg border';
-                itemDiv.innerHTML = `<div><p class="font-semibold">${service.quantity}x ${service.nome}</p><p class="text-sm text-gray-500">${service.description || 'Sem descrição'}</p></div><div class="flex items-center space-x-4"><span class="font-semibold text-gray-800">€ ${itemTotal.toFixed(2)}</span><button onclick="editService(${index})" class="text-blue-500 hover:text-blue-700 font-medium no-print">Editar</button><button onclick="removeService(${index})" class="text-red-500 hover:text-red-700 font-bold no-print">×</button></div>`;
+                itemDiv.innerHTML = `
+                    <div>
+                        <p class="font-semibold">${service.quantity}x ${service.nome}</p>
+                        <p class="text-sm text-gray-500">${service.description || 'Sem descrição'}</p>
+                        <p class="text-xs text-gray-400">Unitário: € ${Number(service.preco || 0).toFixed(2)}</p>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <span class="font-semibold text-gray-800">€ ${itemTotal.toFixed(2)}</span>
+                        <button onclick="editService(${index})" class="text-blue-500 hover:text-blue-700 font-medium no-print">Editar</button>
+                        <button onclick="removeService(${index})" class="text-red-500 hover:text-red-700 font-bold no-print">×</button>
+                    </div>
+                `;
                 summaryServicesList.appendChild(itemDiv);
             });
             const discount = parseFloat(discountInput.value) || 0;
@@ -1160,10 +1178,11 @@ const handleClientSearch = async () => {
             }
         };
 
-        const addServiceToOrder = (service, quantity = 1, description = "") => {
+        const addServiceToOrder = (service, quantity = 1, description = "", price = null) => {
             const q = (quantity === undefined || quantity === null || quantity === "") ? 1 : Number(quantity);
             const desc = (description === undefined || description === null) ? "" : String(description);
-            selectedServices.push({ ...service, quantity: isNaN(q) ? 1 : q, description: desc });
+            const p = (price === undefined || price === null || price === "") ? service.preco : Number(price);
+            selectedServices.push({ ...service, preco: isNaN(p) ? service.preco : p, quantity: isNaN(q) ? 1 : q, description: desc });
             renderOrderSummary();
         };
 
@@ -1172,6 +1191,14 @@ const handleClientSearch = async () => {
             modalTitle.textContent = action === 'add' ? 'Adicionar Detalhes' : 'Editar Detalhes';
             document.getElementById('service-quantity').value = service.quantity || 1;
             document.getElementById('service-description').value = service.description || '';
+            const priceEl = document.getElementById('service-price');
+            if (priceEl) priceEl.value = (service.preco !== undefined && service.preco !== null) ? Number(service.preco).toFixed(2) : (service.preco === 0 ? '0.00' : '');
+            const hintEl = document.getElementById('service-price-hint');
+            if (hintEl && action === 'add') {
+                hintEl.textContent = `Valor padrão: € ${Number(service.preco || 0).toFixed(2)} (você pode ajustar).`;
+            } else if (hintEl && action === 'edit') {
+                hintEl.textContent = `Ajuste o valor se necessário.`;
+            }
             serviceDetailsModal.classList.remove('hidden');
         };
 
@@ -1197,8 +1224,26 @@ const closeServiceModal = () => {
         const confirmServiceAction = () => {
             const quantity = parseInt(document.getElementById('service-quantity').value);
             const description = document.getElementById('service-description').value.trim();
-            const { action, service } = currentServiceAction;
-            if (action === 'add') { addServiceToOrder(service, quantity, description); }
+            const priceRaw = document.getElementById('service-price') ? document.getElementById('service-price').value : null;
+            const price = priceRaw === null ? null : parseFloat(priceRaw);
+
+            const { action, service, index } = currentServiceAction;
+
+            if (action === 'add') {
+                addServiceToOrder(service, quantity, description, isNaN(price) ? null : price);
+            } else if (action === 'edit' && index !== null && index !== undefined) {
+                // Atualiza o item já selecionado
+                const svc = selectedServices[index];
+                if (svc) {
+                    svc.quantity = isNaN(quantity) ? (svc.quantity || 1) : quantity;
+                    svc.description = description;
+                    if (!isNaN(price)) {
+                        svc.preco = price;
+                    }
+                    renderOrderSummary();
+                }
+            }
+
             closeServiceModal();
         };
 
