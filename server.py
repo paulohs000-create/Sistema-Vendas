@@ -121,6 +121,34 @@ def handle_errors(f):
     return wrapper
 
 
+
+def _to_int_or_none(value):
+    """Converte value para int quando possível (aceita str/int). Retorna None se inválido."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value.is_integer():
+            return int(value)
+        return None
+    if isinstance(value, str):
+        v = value.strip()
+        if v == "":
+            return None
+        if v.isdigit():
+            return int(v)
+        try:
+            f = float(v)
+            if f.is_integer():
+                return int(f)
+        except Exception:
+            return None
+    return None
+
+
 # -------------------------------------------------------------------------
 # Schema safety (migrações leves em runtime)
 # -------------------------------------------------------------------------
@@ -1999,16 +2027,42 @@ def criar_pedido():
             )
             pedido_id = cur.fetchone()["id_pedido"]
 
-            for s in services:
-                service_id = s.get("id")
-                qty = int(s.get("quantity") or 1)
+            for s_idx, s in enumerate(services):
+                raw_service_id = (
+                    s.get("id")
+                    or s.get("serviceId")
+                    or s.get("id_service")
+                    or s.get("idService")
+                )
+                service_id = _to_int_or_none(raw_service_id)
+
+                if service_id is None:
+                    # Evita quebrar o fluxo quando algum item vem sem id
+                    return (
+                        jsonify(
+                            {
+                                "error": "Serviço inválido (id ausente ou inválido).",
+                                "detail": {
+                                    "index": s_idx,
+                                    "id": raw_service_id,
+                                    "name": s.get("name"),
+                                },
+                            }
+                        ),
+                        400,
+                    )
+
+                qty = _to_int_or_none(s.get("quantity")) or 1
+                if qty < 1:
+                    qty = 1
+
                 desc = s.get("description")
                 cur.execute(
                     """
                     INSERT INTO pedido_servicos (id_pedido, id_service, quantity, description, status)
                     VALUES (%s, %s, %s, %s, %s)
                     """,
-                    (pedido_id, int(service_id), qty, desc, "Pendente"),
+                    (pedido_id, service_id, qty, desc, "Pendente"),
                 )
 
         conn.commit()
