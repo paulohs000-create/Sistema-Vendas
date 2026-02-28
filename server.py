@@ -121,34 +121,6 @@ def handle_errors(f):
     return wrapper
 
 
-
-def _to_int_or_none(value):
-    """Converte value para int quando possível (aceita str/int). Retorna None se inválido."""
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        if value.is_integer():
-            return int(value)
-        return None
-    if isinstance(value, str):
-        v = value.strip()
-        if v == "":
-            return None
-        if v.isdigit():
-            return int(v)
-        try:
-            f = float(v)
-            if f.is_integer():
-                return int(f)
-        except Exception:
-            return None
-    return None
-
-
 # -------------------------------------------------------------------------
 # Schema safety (migrações leves em runtime)
 # -------------------------------------------------------------------------
@@ -186,6 +158,34 @@ def ensure_schema():
 
 
 ensure_schema()
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+def _to_int_or_none(v):
+    """Converte valores para int de forma segura (retorna None se inválido)."""
+    if v is None:
+        return None
+    try:
+        if isinstance(v, bool):
+            return int(v)
+        if isinstance(v, (int,)):
+            return int(v)
+        s = str(v).strip()
+        if s == "":
+            return None
+        return int(float(s))
+    except Exception:
+        return None
+
+
+def _truthy(v) -> bool:
+    if v is None:
+        return False
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    return s in ("1", "true", "t", "yes", "y", "on")
 
 # -----------------------------------------------------------------------------
 # Auth
@@ -1417,6 +1417,100 @@ def _caixa_totals_for_day(day: date) -> dict:
     }
 
 
+
+@app.get("/pedidos/recentes")
+@login_required(["admin", "caixa"])
+@handle_errors
+def pedidos_recentes():
+    """
+    Histórico (ex: "Últimos 3 meses") para o Atendimento.
+    Params:
+      - months: int (default 3)
+      - search: texto (nome, telefone, nif, nº pedido)
+      - only_nif: 1/true -> apenas pedidos com include_nif = true
+      - limit: int (default 300, max 2000)
+    """
+    months = _to_int_or_none(request.args.get("months")) or 3
+    months = max(1, min(36, months))
+
+    q = (request.args.get("search") or request.args.get("q") or "").strip()
+    only_nif = _truthy(request.args.get("only_nif") or request.args.get("onlyNif"))
+    limit = _to_int_or_none(request.args.get("limit")) or 300
+    limit = max(1, min(2000, limit))
+
+    # Janela de meses (aprox.)
+    start_date = (date.today() - timedelta(days=months * 31))
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    p.id_pedido,
+                    p.data_entrada::date AS dia,
+                    p.data_prevista,
+                    c.name AS nome,
+                    c.phone AS telefone,
+                    CASE
+                      WHEN p.include_nif = true AND c.nif IS NOT NULL AND c.nif <> '' THEN c.nif
+                      ELSE ''
+                    END AS nif,
+                    p.include_nif,
+                    p.preco_total::numeric(10,2) AS preco_total,
+                    STRING_AGG(
+                      s.name || ' x' || COALESCE(ps.quantity,1)::text ||
+                      CASE
+                        WHEN ps.description IS NOT NULL AND ps.description <> '' THEN ' (' || ps.description || ')'
+                        ELSE ''
+                      END
+                      , ' | ' ORDER BY ps.id_pedido_servico
+                    ) AS servicos
+                FROM pedidos p
+                JOIN clients c ON c.id_client = p.id_client
+                LEFT JOIN pedido_servicos ps ON ps.id_pedido = p.id_pedido
+                LEFT JOIN services s ON s.id_service = ps.id_service
+                WHERE p.data_entrada::date >= %s
+                  AND (%s = '' OR
+                       c.name ILIKE ('%%' || %s || '%%') OR
+                       c.phone ILIKE ('%%' || %s || '%%') OR
+                       c.nif ILIKE ('%%' || %s || '%%') OR
+                       p.id_pedido::text = %s
+                  )
+                  AND (%s = false OR p.include_nif = true)
+                GROUP BY p.id_pedido, dia, p.data_prevista, c.name, c.phone, c.nif, p.include_nif, p.preco_total
+                ORDER BY p.data_entrada DESC
+                LIMIT %s
+                """,
+                (start_date, q, q, q, q, q, only_nif, limit),
+            )
+            rows = cur.fetchall()
+
+    payload = []
+    for r in rows:
+        payload.append(
+            {
+                "id_pedido": r["id_pedido"],
+                "dia": r["dia"].strftime("%Y-%m-%d") if r.get("dia") else None,
+                "data_prevista": r["data_prevista"].strftime("%Y-%m-%d") if r.get("data_prevista") else None,
+                "nome": r.get("nome"),
+                "telefone": r.get("telefone"),
+                "nif": r.get("nif") or "",
+                "include_nif": bool(r.get("include_nif")),
+                "preco_total": float(r.get("preco_total") or 0),
+                "servicos": r.get("servicos") or "",
+            }
+        )
+
+    return jsonify({"items": payload}), 200
+
+
+# Alias de compatibilidade (se algum front antigo chamar outro caminho)
+@app.get("/pedidos/recentes2months")
+@login_required(["admin", "caixa"])
+@handle_errors
+def pedidos_recentes_alias():
+    return pedidos_recentes()
+
 @app.get("/controle-caixa")
 @login_required(["admin"])
 def controle_caixa_page():
@@ -2023,46 +2117,20 @@ def criar_pedido():
                 VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
                 RETURNING id_pedido
                 """,
-                (int(client_id), delivery_date, comments, discount, total_price, "Pendente", include_nif),
+                (_to_int_or_none(client_id), delivery_date, comments, discount, total_price, "Pendente", include_nif),
             )
             pedido_id = cur.fetchone()["id_pedido"]
 
-            for s_idx, s in enumerate(services):
-                raw_service_id = (
-                    s.get("id")
-                    or s.get("serviceId")
-                    or s.get("id_service")
-                    or s.get("idService")
-                )
-                service_id = _to_int_or_none(raw_service_id)
-
-                if service_id is None:
-                    # Evita quebrar o fluxo quando algum item vem sem id
-                    return (
-                        jsonify(
-                            {
-                                "error": "Serviço inválido (id ausente ou inválido).",
-                                "detail": {
-                                    "index": s_idx,
-                                    "id": raw_service_id,
-                                    "name": s.get("name"),
-                                },
-                            }
-                        ),
-                        400,
-                    )
-
-                qty = _to_int_or_none(s.get("quantity")) or 1
-                if qty < 1:
-                    qty = 1
-
+            for s in services:
+                service_id = s.get("id")
+                qty = int(s.get("quantity") or 1)
                 desc = s.get("description")
                 cur.execute(
                     """
                     INSERT INTO pedido_servicos (id_pedido, id_service, quantity, description, status)
                     VALUES (%s, %s, %s, %s, %s)
                     """,
-                    (pedido_id, service_id, qty, desc, "Pendente"),
+                    (pedido_id, int(service_id), qty, desc, "Pendente"),
                 )
 
         conn.commit()
