@@ -1501,7 +1501,7 @@ def pedidos_recentes():
             }
         )
 
-    return jsonify({"items": payload}), 200
+    return jsonify({"results": payload, "items": payload}), 200
 
 
 # Alias de compatibilidade (se algum front antigo chamar outro caminho)
