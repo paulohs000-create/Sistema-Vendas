@@ -53,7 +53,7 @@
 
 
     <section id="section-atendimento">
-  <div id="main-application" class="bg-white p-8 sm:p-10 rounded-2xl shadow-2xl w-full max-w-2xl space-y-8">
+  <div id="main-application" class="bg-white p-8 sm:p-10 rounded-2xl shadow-2xl w-full max-w-6xl space-y-8">
         
         <header id="main-header" class="text-center">
             <h1 class="text-3xl sm:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-indigo-600">
@@ -110,11 +110,11 @@
               <div id="global-search-results" class="hidden bg-white border border-gray-200 rounded-2xl p-3 max-h-72 overflow-auto"></div>
             </div>
 
-                <div id="service-categories" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4"></div>
+                <div id="service-categories" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4"></div>
             </div>
             <div id="specific-services-container" class="hidden">
                  <h2 id="specific-service-title" class="text-2xl font-semibold text-gray-800 border-b pb-3 mb-6">3. Selecione o Serviço</h2>
-                 <div id="specific-services" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4"></div>
+                 <div id="specific-services" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4"></div>
                 <button id="back-to-categories-button" class="mt-6 w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors">Voltar para Categorias</button>
             </div>
         </div>
@@ -269,6 +269,21 @@
           </div>
         </div>
       </div>
+
+    <!-- Modal: confirmar voltar para seleção de cliente -->
+    <div id="confirm-back-client-modal" class="fixed inset-0 bg-gray-900/50 flex items-center justify-center p-4 z-50 hidden">
+      <div class="bg-white p-7 rounded-2xl shadow-2xl w-full max-w-md space-y-5">
+        <h3 class="text-xl font-semibold text-gray-900 text-center">Trocar de cliente?</h3>
+        <p class="text-sm text-gray-600 text-center">
+          Isso vai limpar a seleção atual de serviços e voltar para a busca de cliente.
+        </p>
+        <div class="flex items-center justify-center gap-3 pt-2">
+          <button id="confirm-back-client-cancel" class="px-6 py-2.5 rounded-xl bg-gray-200 text-gray-800 font-semibold hover:bg-gray-300 transition">Cancelar</button>
+          <button id="confirm-back-client-ok" class="px-6 py-2.5 rounded-xl bg-purple-600 text-white font-semibold hover:bg-purple-700 transition">Voltar</button>
+        </div>
+      </div>
+    </div>
+
 
     <script>
         const API_URL = `${window.location.protocol}//${window.location.host}`;
@@ -1343,10 +1358,97 @@ searchClientButton.addEventListener('click', handleClientSearch);
         backToCategoriesButton.addEventListener('click', showCategories);
 
         // Navegação (Categorias)
-        document.getElementById("btn-back-to-client")?.addEventListener("click", () => {
-            showSection("client-section");
+        // Navegação (Categorias)
+(function(){
+    const backBtn = document.getElementById("btn-back-to-client");
+    const modal = document.getElementById("confirm-back-client-modal");
+    const modalCancel = document.getElementById("confirm-back-client-cancel");
+    const modalOk = document.getElementById("confirm-back-client-ok");
+
+    function openModal() {
+        if (!modal) { resetAtendimentoToClient(); return; }
+        modal.classList.remove("hidden");
+    }
+    function closeModal() {
+        if (!modal) return;
+        modal.classList.add("hidden");
+    }
+
+    function resetAtendimentoToClient() {
+        // Voltar para etapa 1 (cliente) sem quebrar o resto do fluxo
+        try {
+            // limpar seleções
+            currentCategory = null;
+            currentServiceAction = null;
+            selectedServices = [];
+
+            // resetar UI de serviços
+            if (specificServicesContainer) specificServicesContainer.classList.add('hidden');
+            if (serviceCategoriesContainer) serviceCategoriesContainer.classList.remove('hidden');
+            if (specificServicesDiv) specificServicesDiv.innerHTML = '';
+
+            // esconder etapas seguintes e mostrar cliente
+            if (serviceSection) serviceSection.classList.add('hidden');
+            if (orderSummarySection) orderSummarySection.classList.add('hidden');
+            if (clientSection) clientSection.classList.remove('hidden');
+
+            // limpar cliente atual
+            currentClient = null;
+
+            // limpar campos / resultados
+            if (telefoneInput) telefoneInput.value = '';
+            const res = document.getElementById('client-search-results');
+            if (res) res.innerHTML = '';
+            if (clientDetailsInputDiv) clientDetailsInputDiv.classList.add('hidden');
+            if (continueToServicesButton) continueToServicesButton.classList.add('hidden');
+
+            // reset checkbox nif
+            const nifChk = document.getElementById('nif-checkbox');
+            if (nifChk) nifChk.checked = false;
+            const nifDetails = document.getElementById('nif-details-container');
+            if (nifDetails) { nifDetails.innerHTML = ''; nifDetails.classList.add('hidden'); }
+
+            // limpar resumo
+            if (summaryClientName) summaryClientName.textContent = '';
+            if (summaryServicesList) summaryServicesList.innerHTML = '';
+            if (summaryTotalPrice) summaryTotalPrice.textContent = '€ 0.00';
+            if (discountInput) discountInput.value = '0';
+
+            // mensagem
+            if (clientInfoParagraph) {
+                clientInfoParagraph.textContent = '';
+                clientInfoParagraph.className = 'text-gray-500 text-base mt-3 h-6';
+            }
+
+            // sidebar (em mobile: manter aberto para seleção do cliente)
             setSidebarAuto(false);
-        });
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
+    // expor para openModal fallback
+    window.resetAtendimentoToClient = resetAtendimentoToClient;
+
+    backBtn?.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        // se já tem algo selecionado, confirmar; senão volta direto
+        const hasSomething = (currentClient !== null) || (selectedServices && selectedServices.length > 0);
+        if (!hasSomething) {
+            resetAtendimentoToClient();
+            return;
+        }
+        openModal();
+    });
+
+    modalCancel?.addEventListener("click", (ev) => { ev.preventDefault(); closeModal(); });
+    modalOk?.addEventListener("click", (ev) => { ev.preventDefault(); closeModal(); resetAtendimentoToClient(); });
+
+    // fechar ao clicar fora
+    modal?.addEventListener("click", (ev) => {
+        if (ev.target === modal) closeModal();
+    });
+})();
 
         document.getElementById("btn-next-to-services")?.addEventListener("click", () => {
             if (currentCategory) {
