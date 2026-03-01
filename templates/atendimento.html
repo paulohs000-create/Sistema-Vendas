@@ -613,9 +613,7 @@ out.push(STORE_INFO.email + "\n");
             out.push(line("-"));
             out.push("\n");
 
-            // ✅ ajuste: removemos a frase “Este documento nao serve de fatura”
-
-                        // Linhas extras do rodapé (personalizável)
+            // Linhas extras do rodapé (personalizável)
             pushFormattedLines(out, RECEIPT_FOOTER_EXTRA);
             if (RECEIPT_FOOTER_EXTRA.length) out.push("\n");
 
@@ -649,7 +647,6 @@ out.push(STORE_INFO.email + "\n");
 
 async function printReceipt(receiptData) {
             if (PRINT_MODE === "http") {
-                // Backend precisa expor POST /print que receba receiptData e imprima no servidor/local.
                 const resp = await fetch(`${API_URL}/print`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -661,11 +658,10 @@ async function printReceipt(receiptData) {
                 }
                 return;
             }
-            // padrão: QZ
             await printWithQZ(receiptData);
         }
 
-                // ============================
+        // ============================
         // APP (Atendimento)
         // ============================
         const clientSection = document.getElementById('client-section');
@@ -704,9 +700,73 @@ async function printReceipt(receiptData) {
         let cachedServices = null; // cache de serviços
         let currentCategory = null; // categoria selecionada
 
-let selectedServices = [];
+        let selectedServices = [];
         let currentServiceAction = null;
 
+        // ============================
+        // FIX CRÍTICO: garantir ID do serviço sempre válido
+        // ============================
+        function getServiceId(raw) {
+            if (!raw) return null;
+            const cand = raw.id ?? raw.id_servico ?? raw.idService ?? raw.service_id ?? raw.serviceId ?? raw.idServico;
+            const n = Number(cand);
+            return Number.isFinite(n) && n > 0 ? n : null;
+        }
+
+        function safeStr(v) { return (v === undefined || v === null) ? "" : String(v); }
+
+        async function ensureServicesCache() {
+            if (cachedServices) return cachedServices;
+            const resp = await fetch(`${API_URL}/services`);
+            const data = await resp.json();
+            cachedServices = data;
+            return cachedServices;
+        }
+
+        function normalizeText(s) {
+            return (s || "")
+                .toString()
+                .toLowerCase()
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "");
+        }
+
+        async function resolveServiceIdByNameCategory(nome, categoria, preco) {
+            try {
+                const data = cachedServices || await ensureServicesCache();
+                if (!data || typeof data !== "object") return null;
+
+                // data pode vir como { "Categoria": [..] }
+                const catItems = data[categoria];
+                if (Array.isArray(catItems)) {
+                    const found = catItems.find(it => {
+                        const n1 = normalizeText(it.nome || it.name);
+                        const n2 = normalizeText(nome);
+                        if (!n1 || !n2) return false;
+                        const p = Number(it.preco ?? it.price ?? 0);
+                        // match por nome, e se tiver preço, tenta aproximar
+                        if (n1 === n2) {
+                            if (preco === undefined || preco === null) return true;
+                            return Math.abs(p - Number(preco || 0)) < 0.001;
+                        }
+                        return false;
+                    });
+                    const rid = getServiceId(found);
+                    if (rid) return rid;
+                }
+
+                // fallback: procurar em todas categorias por nome
+                for (const [cat, items] of Object.entries(data)) {
+                    if (!Array.isArray(items)) continue;
+                    const found = items.find(it => normalizeText(it.nome || it.name) === normalizeText(nome));
+                    const rid = getServiceId(found);
+                    if (rid) return rid;
+                }
+            } catch (e) {
+                console.warn("resolveServiceIdByNameCategory falhou:", e);
+            }
+            return null;
+        }
 
 // ============================
 // Navegação (Sidebar)
@@ -727,7 +787,7 @@ function setActiveNav(active) {
 }
 
 function showSection(which) {
-            if (which === "client-section") { setSidebarAuto(false); } else { setSidebarAuto(true); }
+    if (which === "client-section") { setSidebarAuto(false); } else { setSidebarAuto(true); }
 
     if (sectionAtendimento) sectionAtendimento.classList.toggle('hidden', which !== 'atendimento');
     if (sectionClientes) sectionClientes.classList.toggle('hidden', which !== 'clientes');
@@ -947,7 +1007,6 @@ async function loadHistorico() {
     try {
         const resp = await fetch(url);
 
-        // Se o backend responder HTML/erro, evita SyntaxError no JSON.parse
         const ct = (resp.headers.get("content-type") || "").toLowerCase();
         if (!resp.ok) {
           const txt = await resp.text();
@@ -997,12 +1056,10 @@ const handleClientSearch = async () => {
     clientInfoParagraph.className = 'text-gray-600 text-base font-semibold mt-3 h-6';
 
     try {
-        // 1) Busca ampla (telefone parcial ou nome)
         const resp = await fetch(`${API_URL}/clients/search?q=${encodeURIComponent(q)}`);
         const data = await resp.json().catch(() => ({ results: [] }));
         const results = data.results || [];
 
-        // Se digitou exatamente um telefone e achou 1, seleciona direto
         if (results.length === 1) {
             currentClient = results[0];
             clientInfoParagraph.innerHTML = `Cliente encontrado: <strong class="text-purple-700">${currentClient.name}</strong>`;
@@ -1041,12 +1098,10 @@ const handleClientSearch = async () => {
             return;
         }
 
-        // Nenhum resultado: abre cadastro
         clientInfoParagraph.textContent = 'Cliente não encontrado. Por favor, preencha os dados para cadastro.';
         clientInfoParagraph.className = 'text-blue-600 text-base font-semibold mt-3 h-6';
         clientDetailsInputDiv.classList.remove('hidden');
 
-        // Se a busca foi por telefone (só dígitos), mantém no campo telefone e ajuda o cadastro
         if (/^\d+$/.test(q)) {
             telefoneInput.value = q;
         }
@@ -1086,6 +1141,10 @@ const handleClientSearch = async () => {
                 const response = await fetch(`${API_URL}/services`);
                 if (!response.ok) throw new Error('Não foi possível carregar os serviços.');
                 allServicesData = await response.json();
+
+                // mantém cache para resolver id por nome
+                cachedServices = allServicesData;
+
                 displayServiceCategories(allServicesData);
                 clientSection.classList.add('hidden');
                 serviceSection.classList.remove('hidden');
@@ -1110,10 +1169,13 @@ const handleClientSearch = async () => {
             specificServiceTitle.textContent = `3. Selecione o Serviço em ${category}`;
             specificServicesDiv.innerHTML = '';
             allServicesData[category].forEach(service => {
+                // normaliza id
+                const sid = getServiceId(service);
+
                 const button = document.createElement('button');
                 button.className = 'w-full text-left p-4 rounded-lg bg-gray-50 hover:bg-indigo-100 border transition-colors';
                 button.innerHTML = `<span class="font-semibold text-gray-800">${service.nome}</span><span class="block text-sm text-gray-500">€ ${service.preco.toFixed(2)}</span>`;
-                button.onclick = () => openServiceModal('add', service);
+                button.onclick = () => openServiceModal('add', { ...service, id: sid, categoria: category });
                 specificServicesDiv.appendChild(button);
             });
             serviceCategoriesContainer.classList.add('hidden');
@@ -1126,11 +1188,11 @@ const handleClientSearch = async () => {
         };
 
         const renderOrderSummary = () => {
-            summaryClientName.textContent = currentClient.name;
+            summaryClientName.textContent = currentClient?.name || "";
             summaryServicesList.innerHTML = '';
             let total = 0;
             selectedServices.forEach((service, index) => {
-                const itemTotal = service.preco * service.quantity;
+                const itemTotal = Number(service.preco || 0) * Number(service.quantity || 1);
                 total += itemTotal;
                 const itemDiv = document.createElement('div');
                 itemDiv.className = 'flex justify-between items-center bg-white p-3 rounded-lg border';
@@ -1192,11 +1254,25 @@ const handleClientSearch = async () => {
             }
         };
 
-        const addServiceToOrder = (service, quantity = 1, description = "", price = null) => {
+        const addServiceToOrder = async (service, quantity = 1, description = "", price = null) => {
             const q = (quantity === undefined || quantity === null || quantity === "") ? 1 : Number(quantity);
             const desc = (description === undefined || description === null) ? "" : String(description);
             const p = (price === undefined || price === null || price === "") ? service.preco : Number(price);
-            selectedServices.push({ ...service, preco: isNaN(p) ? service.preco : p, quantity: isNaN(q) ? 1 : q, description: desc });
+
+            // garante id
+            let sid = getServiceId(service);
+            if (!sid) {
+                sid = await resolveServiceIdByNameCategory(service.nome, service.categoria || currentCategory || "Geral", service.preco);
+            }
+
+            selectedServices.push({
+                ...service,
+                id: sid,
+                preco: isNaN(p) ? service.preco : p,
+                quantity: isNaN(q) ? 1 : q,
+                description: desc,
+                categoria: service.categoria || currentCategory || service.category || "Geral"
+            });
             renderOrderSummary();
         };
 
@@ -1216,8 +1292,6 @@ const handleClientSearch = async () => {
             serviceDetailsModal.classList.remove('hidden');
         };
 
-        
-        // Expor funções globais usadas nos botões inline do resumo
         window.editService = (index) => {
             const svc = selectedServices[index];
             if (!svc) return;
@@ -1230,12 +1304,12 @@ const handleClientSearch = async () => {
             renderOrderSummary();
         };
 
-const closeServiceModal = () => {
+        const closeServiceModal = () => {
             serviceDetailsModal.classList.add('hidden');
             currentServiceAction = null;
         };
 
-        const confirmServiceAction = () => {
+        const confirmServiceAction = async () => {
             const quantity = parseInt(document.getElementById('service-quantity').value);
             const description = document.getElementById('service-description').value.trim();
             const priceRaw = document.getElementById('service-price') ? document.getElementById('service-price').value : null;
@@ -1244,15 +1318,19 @@ const closeServiceModal = () => {
             const { action, service, index } = currentServiceAction;
 
             if (action === 'add') {
-                addServiceToOrder(service, quantity, description, isNaN(price) ? null : price);
+                await addServiceToOrder(service, quantity, description, isNaN(price) ? null : price);
             } else if (action === 'edit' && index !== null && index !== undefined) {
-                // Atualiza o item já selecionado
                 const svc = selectedServices[index];
                 if (svc) {
                     svc.quantity = isNaN(quantity) ? (svc.quantity || 1) : quantity;
                     svc.description = description;
                     if (!isNaN(price)) {
                         svc.preco = price;
+                    }
+                    // se por algum motivo perdeu id, tenta resolver
+                    if (!getServiceId(svc)) {
+                        const rid = await resolveServiceIdByNameCategory(svc.nome, svc.categoria || currentCategory || "Geral", svc.preco);
+                        svc.id = rid;
                     }
                     renderOrderSummary();
                 }
@@ -1269,20 +1347,39 @@ const closeServiceModal = () => {
             if (!deliveryDate) { alert('Por favor, selecione uma data de entrega prevista.'); return; }
 
             let subtotal = 0;
-            selectedServices.forEach(s => { subtotal += s.preco * s.quantity; });
+            selectedServices.forEach(s => { subtotal += Number(s.preco || 0) * Number(s.quantity || 1); });
             const totalPrice = subtotal - discount;
 
             const clientId = currentClient.id_client || currentClient.id;
+
+            // ✅ valida IDs antes de enviar (evita int(None) no backend)
+            const missing = [];
+            for (const s of selectedServices) {
+                let sid = getServiceId(s);
+                if (!sid) {
+                    sid = await resolveServiceIdByNameCategory(s.nome, s.categoria || currentCategory || "Geral", s.preco);
+                    s.id = sid;
+                }
+                if (!sid) missing.push(`${s.nome} (${s.categoria || "Geral"})`);
+            }
+            if (missing.length) {
+                alert(
+                    "Não foi possível finalizar porque alguns serviços estão sem ID no sistema.\n\n" +
+                    "Serviços afetados:\n- " + missing.join("\n- ") + "\n\n" +
+                    "Sugestão: abra a tela de Gerenciamento e confirme se esses serviços existem e têm ID."
+                );
+                return;
+            }
 
             const orderData = {
                 clientId: clientId,
                 deliveryDate: deliveryDate,
                 comments: comments,
-                    include_nif: !!document.getElementById('nif-checkbox')?.checked,
+                include_nif: !!document.getElementById('nif-checkbox')?.checked,
                 discount: discount,
                 totalPrice: totalPrice,
                 services: selectedServices.map(s => ({
-                    id: s.id,
+                    id: getServiceId(s), // sempre número válido
                     quantity: s.quantity,
                     description: s.description,
                     preco: s.preco,
@@ -1302,7 +1399,6 @@ const closeServiceModal = () => {
                 const currentDate = now.toLocaleString('pt-PT').replace(',', '');
                 const deliveryStr = new Date(orderData.deliveryDate + 'T00:00:00').toLocaleDateString('pt-PT');
 
-                // ✅ agora imprimimos como FATURA e sem OT
                 const receiptData = {
                     pedido_id: result.pedido_id,
                     documentType: "Fatura",
@@ -1328,12 +1424,12 @@ const closeServiceModal = () => {
                         name: s.nome,
                         description: s.description,
                         unitPrice: s.preco,
-                        itemTotal: (s.preco * s.quantity)
+                        itemTotal: (Number(s.preco || 0) * Number(s.quantity || 1))
                     }))
                 };
 
                 await printReceipt(receiptData);
-window.location.reload();
+                window.location.reload();
 
             } catch (error) {
                 console.error(error);
@@ -1347,17 +1443,14 @@ window.location.reload();
             }
         };
 
-        
-        // Sidebar toggle (tablet)
         document.getElementById("sidebar-toggle")?.addEventListener("click", () => openSidebar());
         document.getElementById("sidebar-overlay")?.addEventListener("click", () => closeSidebar());
 
-searchClientButton.addEventListener('click', handleClientSearch);
+        searchClientButton.addEventListener('click', handleClientSearch);
         telefoneInput.addEventListener('keyup', (e) => { if (e.key === 'Enter') handleClientSearch(); });
         registerClientButton.addEventListener('click', handleClientRegistration);
         backToCategoriesButton.addEventListener('click', showCategories);
 
-        // Navegação (Categorias)
         // Navegação (Categorias)
 (function(){
     const backBtn = document.getElementById("btn-back-to-client");
@@ -1375,64 +1468,52 @@ searchClientButton.addEventListener('click', handleClientSearch);
     }
 
     function resetAtendimentoToClient() {
-        // Voltar para etapa 1 (cliente) sem quebrar o resto do fluxo
         try {
-            // limpar seleções
             currentCategory = null;
             currentServiceAction = null;
             selectedServices = [];
 
-            // resetar UI de serviços
             if (specificServicesContainer) specificServicesContainer.classList.add('hidden');
             if (serviceCategoriesContainer) serviceCategoriesContainer.classList.remove('hidden');
             if (specificServicesDiv) specificServicesDiv.innerHTML = '';
 
-            // esconder etapas seguintes e mostrar cliente
             if (serviceSection) serviceSection.classList.add('hidden');
             if (orderSummarySection) orderSummarySection.classList.add('hidden');
             if (clientSection) clientSection.classList.remove('hidden');
 
-            // limpar cliente atual
             currentClient = null;
 
-            // limpar campos / resultados
             if (telefoneInput) telefoneInput.value = '';
             const res = document.getElementById('client-search-results');
             if (res) res.innerHTML = '';
             if (clientDetailsInputDiv) clientDetailsInputDiv.classList.add('hidden');
             if (continueToServicesButton) continueToServicesButton.classList.add('hidden');
 
-            // reset checkbox nif
             const nifChk = document.getElementById('nif-checkbox');
             if (nifChk) nifChk.checked = false;
             const nifDetails = document.getElementById('nif-details-container');
             if (nifDetails) { nifDetails.innerHTML = ''; nifDetails.classList.add('hidden'); }
 
-            // limpar resumo
             if (summaryClientName) summaryClientName.textContent = '';
             if (summaryServicesList) summaryServicesList.innerHTML = '';
             if (summaryTotalPrice) summaryTotalPrice.textContent = '€ 0.00';
             if (discountInput) discountInput.value = '0';
 
-            // mensagem
             if (clientInfoParagraph) {
                 clientInfoParagraph.textContent = '';
                 clientInfoParagraph.className = 'text-gray-500 text-base mt-3 h-6';
             }
 
-            // sidebar (em mobile: manter aberto para seleção do cliente)
             setSidebarAuto(false);
         } catch (e) {
             console.error(e);
         }
     }
 
-    // expor para openModal fallback
     window.resetAtendimentoToClient = resetAtendimentoToClient;
 
     backBtn?.addEventListener("click", (ev) => {
         ev.preventDefault();
-        // se já tem algo selecionado, confirmar; senão volta direto
         const hasSomething = (currentClient !== null) || (selectedServices && selectedServices.length > 0);
         if (!hasSomething) {
             resetAtendimentoToClient();
@@ -1444,7 +1525,6 @@ searchClientButton.addEventListener('click', handleClientSearch);
     modalCancel?.addEventListener("click", (ev) => { ev.preventDefault(); closeModal(); });
     modalOk?.addEventListener("click", (ev) => { ev.preventDefault(); closeModal(); resetAtendimentoToClient(); });
 
-    // fechar ao clicar fora
     modal?.addEventListener("click", (ev) => {
         if (ev.target === modal) closeModal();
     });
@@ -1460,20 +1540,16 @@ searchClientButton.addEventListener('click', handleClientSearch);
                 if (input) input.focus();
             }
         });
+
 // Busca global de serviços (todas categorias)
         const globalSearchInput = document.getElementById("global-service-search");
         const globalSearchBox = document.getElementById("global-search-results");
 
-        
         function extractServicesList(data) {
-            // Aceita formatos:
-            // 1) { services: [...] }
-            // 2) [ ... ]
-            // 3) { "Categoria": [ {id,nome,preco}, ... ], ... }
             if (!data) return [];
             if (Array.isArray(data)) return data;
             if (data.services && Array.isArray(data.services)) return data.services;
-            // objeto por categoria
+
             const out = [];
             if (typeof data === "object") {
                 for (const [cat, items] of Object.entries(data)) {
@@ -1490,14 +1566,6 @@ searchClientButton.addEventListener('click', handleClientSearch);
             return out;
         }
 
-function normalizeText(s) {
-            return (s || "")
-                .toString()
-                .toLowerCase()
-                .normalize("NFD")
-                .replace(/[\u0300-\u036f]/g, "");
-        }
-
         function renderGlobalResults(items) {
             if (!globalSearchBox) return;
             if (!items.length) {
@@ -1508,22 +1576,16 @@ function normalizeText(s) {
             globalSearchBox.classList.remove("hidden");
             globalSearchBox.innerHTML = items.map(it => `
                 <button type="button" class="w-full text-left p-3 rounded-xl hover:bg-purple-50 border border-gray-100 mb-2 last:mb-0"
-                        data-cat="${it.category}" data-name="${it.name}" data-price="${it.price}">
+                        data-id="${it.id}"
+                        data-cat="${it.category}"
+                        data-name="${it.name}"
+                        data-price="${it.price}">
                     <div class="font-semibold text-gray-900">${it.name}</div>
                     <div class="text-xs text-gray-500">${it.category} • € ${Number(it.price || 0).toFixed(2)}</div>
                 </button>
             `).join("");
         }
 
-        async function ensureServicesCache() {
-            if (cachedServices) return cachedServices;
-            const resp = await fetch(`${API_URL}/services`);
-            const data = await resp.json();
-            cachedServices = data;
-            return cachedServices;
-        }
-
-        
         async function runGlobalSearch() {
             const q = normalizeText(globalSearchInput?.value || "").trim();
             if (!q || q.length < 2) {
@@ -1532,13 +1594,16 @@ function normalizeText(s) {
             }
             const data = await ensureServicesCache();
             const services = extractServicesList(data);
-            const flat = services.map(s => ({
-                id: s.id,
-                name: s.nome || s.name,
-                price: s.preco || s.price,
-                category: s.categoria || s.category || "Geral",
-                description: s.descricao || s.description || ""
-            }));
+            const flat = services.map(s => {
+                const sid = getServiceId(s);
+                return {
+                    id: sid,
+                    name: s.nome || s.name,
+                    price: s.preco ?? s.price,
+                    category: s.categoria || s.category || "Geral",
+                    description: s.descricao || s.description || ""
+                };
+            });
             const results = flat.filter(it => {
                 const hay = normalizeText(it.name + " " + it.description + " " + it.category);
                 return hay.includes(q);
@@ -1547,35 +1612,31 @@ function normalizeText(s) {
         }
 
         globalSearchInput?.addEventListener("input", () => {
-            // Mantém a busca automática enquanto digita
             runGlobalSearch();
         });
 
         document.getElementById("global-service-search-btn")?.addEventListener("click", () => {
             runGlobalSearch();
         });
-globalSearchBox?.addEventListener("click", (e) => {
+
+        globalSearchBox?.addEventListener("click", async (e) => {
             const btn = e.target.closest("button[data-cat]");
             if (!btn) return;
 
             const cat = btn.getAttribute("data-cat");
             const name = btn.getAttribute("data-name");
             const price = parseFloat(btn.getAttribute("data-price") || "0") || 0;
+            const idAttr = btn.getAttribute("data-id");
+            const sid = Number(idAttr);
+            const serviceId = Number.isFinite(sid) && sid > 0 ? sid : null;
 
-            // Define a categoria atual (para o botão "Avançar" e para contexto)
             currentCategory = cat;
 
-            // Adiciona o serviço direto ao pedido
-            addServiceToOrder({ nome: name, preco: price, categoria: cat }, 1, "");
+            // abre modal para permitir ajustar quantidade/preço/descrição
+            openServiceModal('add', { id: serviceId, nome: name, preco: price, categoria: cat });
 
-            // Limpa UI de busca
             renderGlobalResults([]);
             if (globalSearchInput) globalSearchInput.value = "";
-
-            // Atualiza e navega para o resumo (SEM mexer na navegação lateral)
-            renderOrderSummary();
-            serviceSection.classList.add('hidden');
-            orderSummarySection.classList.remove('hidden');
         });
 
         discountInput.addEventListener('input', renderOrderSummary);
@@ -1618,8 +1679,6 @@ globalSearchBox?.addEventListener("click", (e) => {
 
         window.addEventListener("DOMContentLoaded", primeQZConnection);
         window.addEventListener("load", primeQZConnection);
-
-        // fallback curto para cenários em que o QZ script demora para ficar disponível
         setTimeout(primeQZConnection, 1200);
 
     </script>
