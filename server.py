@@ -1367,6 +1367,76 @@ def pedidos_pendentes():
     return jsonify({"atrasados": atrasados, "hoje": hoje, "proximos": proximos}), 200
 
 
+# -----------------------------------------------------------------------------
+# ✅ ROTA QUE ESTAVA FALTANDO (Concluir Serviço)
+# -----------------------------------------------------------------------------
+@app.put("/pedidos/servico/<int:pedido_servico_id>/concluir")
+@login_required(["admin", "costureira"])
+@handle_errors
+def concluir_pedido_servico(pedido_servico_id: int):
+    """
+    Body JSON:
+      { "id_seamstress": <int> }
+
+    Marca o serviço como Concluído, grava costureira e data_conclusao.
+    Retorna o serviço atualizado (payload compatível com o painel).
+    """
+    data = request.get_json(force=True) or {}
+    id_seamstress = _to_int_or_none(data.get("id_seamstress") or data.get("idSeamstress") or data.get("seamstressId"))
+
+    if not id_seamstress:
+        return jsonify({"error": "id_seamstress é obrigatório."}), 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # valida costureira
+            cur.execute("SELECT 1 FROM seamstresses WHERE id_seamstress = %s", (id_seamstress,))
+            if not cur.fetchone():
+                return jsonify({"error": "Costureira inválida."}), 400
+
+            # atualiza serviço
+            cur.execute(
+                """
+                UPDATE pedido_servicos
+                SET
+                  status = 'Concluído',
+                  id_seamstress_conclusao = %s,
+                  data_conclusao = NOW()
+                WHERE id_pedido_servico = %s
+                """,
+                (id_seamstress, pedido_servico_id),
+            )
+            if cur.rowcount == 0:
+                return jsonify({"error": "Serviço não encontrado."}), 404
+
+            # busca o serviço atualizado no mesmo formato do painel
+            cur.execute(
+                """
+                SELECT
+                    ps.id_pedido_servico,
+                    ps.id_pedido,
+                    ps.quantity,
+                    ps.status,
+                    ps.data_conclusao,
+                    p.data_prevista,
+                    c.name AS client_name,
+                    s.name AS service_name,
+                    ss.name AS costureira_conclusao
+                FROM pedido_servicos ps
+                JOIN pedidos p ON p.id_pedido = ps.id_pedido
+                JOIN clients c ON c.id_client = p.id_client
+                JOIN services s ON s.id_service = ps.id_service
+                LEFT JOIN seamstresses ss ON ss.id_seamstress = ps.id_seamstress_conclusao
+                WHERE ps.id_pedido_servico = %s
+                """,
+                (pedido_servico_id,),
+            )
+            row = cur.fetchone()
+
+        conn.commit()
+
+    return jsonify(_service_row_to_payload(row)), 200
+
 
 # -----------------------------------------------------------------------------
 # Controle de Caixa - Páginas e APIs
