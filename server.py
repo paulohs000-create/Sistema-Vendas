@@ -2287,6 +2287,53 @@ def delete_service(service_id):
 
 
 # -----------------------------------------------------------------------------
+# API - Categories (bulk actions)
+# -----------------------------------------------------------------------------
+@app.put("/categories/<path:category>")
+@login_required(["admin"])
+@handle_errors
+def rename_category(category: str):
+    """Renomeia uma categoria (atualiza em massa services.category)."""
+    data = request.get_json(force=True) or {}
+    new_name = (data.get("new_name") or data.get("newName") or "").strip()
+    if not new_name:
+        return jsonify({"error": "new_name é obrigatório."}), 400
+
+    old = (category or "").strip()
+    if not old:
+        return jsonify({"error": "Categoria inválida."}), 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE services SET category = %s WHERE category = %s",
+                (new_name, old),
+            )
+            affected = cur.rowcount
+        conn.commit()
+
+    return jsonify({"ok": True, "old": old, "new": new_name, "updated": affected}), 200
+
+
+@app.delete("/categories/<path:category>")
+@login_required(["admin"])
+@handle_errors
+def delete_category(category: str):
+    """Apaga uma categoria removendo todos os serviços dentro dela."""
+    cat = (category or "").strip()
+    if not cat:
+        return jsonify({"error": "Categoria inválida."}), 400
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM services WHERE category = %s", (cat,))
+            deleted = cur.rowcount
+        conn.commit()
+
+    return jsonify({"ok": True, "category": cat, "deleted": deleted}), 200
+
+
+# -----------------------------------------------------------------------------
 # API - Seamstresses (CRUD)
 # -----------------------------------------------------------------------------
 @app.get("/seamstresses")
