@@ -1313,6 +1313,61 @@ def pedidos_pendentes():
                 return jsonify([_service_row_to_payload(r) for r in rows]), 200
 
 
+            # Filtro por data (retorna lista simples)
+            if q_date:
+                cur.execute(
+                    base_sql
+                    + """
+                    WHERE p.data_prevista = %s
+                    ORDER BY ps.id_pedido_servico ASC
+                    """,
+                    (q_date,),
+                )
+                rows = cur.fetchall()
+                return jsonify([_service_row_to_payload(r) for r in rows]), 200
+
+            # Sem filtros -> categorizado
+            today = date.today()
+
+            # atrasados
+            cur.execute(
+                base_sql
+                + """
+                WHERE p.data_prevista < %s
+                  AND COALESCE(ps.status,'') <> 'Concluído'
+                ORDER BY p.data_prevista ASC, ps.id_pedido_servico ASC
+                """,
+                (today,),
+            )
+            atrasados = [_service_row_to_payload(r) for r in cur.fetchall()]
+
+            # hoje
+            cur.execute(
+                base_sql
+                + """
+                WHERE p.data_prevista = %s
+                  AND COALESCE(ps.status,'') <> 'Concluído'
+                ORDER BY ps.id_pedido_servico ASC
+                """,
+                (today,),
+            )
+            hoje = [_service_row_to_payload(r) for r in cur.fetchall()]
+
+            # proximos
+            cur.execute(
+                base_sql
+                + """
+                WHERE p.data_prevista > %s
+                  AND COALESCE(ps.status,'') <> 'Concluído'
+                ORDER BY p.data_prevista ASC, ps.id_pedido_servico ASC
+                """,
+                (today,),
+            )
+            proximos = [_service_row_to_payload(r) for r in cur.fetchall()]
+
+    return jsonify({"atrasados": atrasados, "hoje": hoje, "proximos": proximos}), 200
+
+
 # -----------------------------------------------------------------------------
 # Concluir Serviço (Painel Costureiras)
 # -----------------------------------------------------------------------------
@@ -1386,61 +1441,6 @@ def concluir_pedido_servico(pedido_servico_id: int):
         conn.commit()
 
     return jsonify(_service_row_to_payload(row)), 200
-
-
-            # Filtro por data (retorna lista simples)
-            if q_date:
-                cur.execute(
-                    base_sql
-                    + """
-                    WHERE p.data_prevista = %s
-                    ORDER BY ps.id_pedido_servico ASC
-                    """,
-                    (q_date,),
-                )
-                rows = cur.fetchall()
-                return jsonify([_service_row_to_payload(r) for r in rows]), 200
-
-            # Sem filtros -> categorizado
-            today = date.today()
-
-            # atrasados
-            cur.execute(
-                base_sql
-                + """
-                WHERE p.data_prevista < %s
-                  AND COALESCE(ps.status,'') <> 'Concluído'
-                ORDER BY p.data_prevista ASC, ps.id_pedido_servico ASC
-                """,
-                (today,),
-            )
-            atrasados = [_service_row_to_payload(r) for r in cur.fetchall()]
-
-            # hoje
-            cur.execute(
-                base_sql
-                + """
-                WHERE p.data_prevista = %s
-                  AND COALESCE(ps.status,'') <> 'Concluído'
-                ORDER BY ps.id_pedido_servico ASC
-                """,
-                (today,),
-            )
-            hoje = [_service_row_to_payload(r) for r in cur.fetchall()]
-
-            # proximos
-            cur.execute(
-                base_sql
-                + """
-                WHERE p.data_prevista > %s
-                  AND COALESCE(ps.status,'') <> 'Concluído'
-                ORDER BY p.data_prevista ASC, ps.id_pedido_servico ASC
-                """,
-                (today,),
-            )
-            proximos = [_service_row_to_payload(r) for r in cur.fetchall()]
-
-    return jsonify({"atrasados": atrasados, "hoje": hoje, "proximos": proximos}), 200
 
 
 
