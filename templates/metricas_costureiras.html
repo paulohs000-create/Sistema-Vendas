@@ -120,6 +120,68 @@
         </div>
       </div>
     </div>
+
+    <!-- NOVO: Detalhes dos serviços/pedidos -->
+    <div class="mt-6 bg-white rounded-2xl shadow-sm border border-gray-200 p-5">
+      <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        <div>
+          <h2 class="text-xl font-bold text-gray-800">Detalhes dos Serviços (Pedidos)</h2>
+          <div class="text-sm text-gray-500">
+            Mostra os serviços concluídos no período com informações do cliente e do pedido.
+          </div>
+        </div>
+
+        <div class="flex flex-col sm:flex-row gap-2 sm:items-center">
+          <input id="detailsSearch" type="text" placeholder="Pesquisar (cliente, serviço, descrição, doc, nif...)"
+                 class="w-full sm:w-80 rounded-xl border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+          <button id="btnDetails"
+                  class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold">
+            Carregar Detalhes
+          </button>
+        </div>
+      </div>
+
+      <div class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div class="bg-gray-50 rounded-2xl border border-gray-200 p-4">
+          <div class="text-xs text-gray-500">Total (Detalhes)</div>
+          <div id="detailsTotal" class="text-2xl font-extrabold text-indigo-700 mt-1">—</div>
+        </div>
+        <div class="bg-gray-50 rounded-2xl border border-gray-200 p-4">
+          <div class="text-xs text-gray-500">Nº Serviços</div>
+          <div id="detailsServices" class="text-2xl font-extrabold text-indigo-700 mt-1">—</div>
+        </div>
+        <div class="bg-gray-50 rounded-2xl border border-gray-200 p-4">
+          <div class="text-xs text-gray-500">Nº Pedidos</div>
+          <div id="detailsOrders" class="text-2xl font-extrabold text-indigo-700 mt-1">—</div>
+        </div>
+      </div>
+
+      <div class="mt-4 overflow-auto">
+        <table class="min-w-full text-sm">
+          <thead>
+            <tr class="bg-gray-900 text-white">
+              <th class="text-left py-3 px-3 font-bold whitespace-nowrap">Dia</th>
+              <th class="text-left py-3 px-3 font-bold whitespace-nowrap">Costureira</th>
+              <th class="text-left py-3 px-3 font-bold whitespace-nowrap">Cliente</th>
+              <th class="text-left py-3 px-3 font-bold whitespace-nowrap">Telefone</th>
+              <th class="text-left py-3 px-3 font-bold whitespace-nowrap">NIF</th>
+              <th class="text-left py-3 px-3 font-bold whitespace-nowrap">Documento</th>
+              <th class="text-left py-3 px-3 font-bold whitespace-nowrap">Pedido</th>
+              <th class="text-left py-3 px-3 font-bold whitespace-nowrap">Serviço</th>
+              <th class="text-left py-3 px-3 font-bold">Descrição</th>
+              <th class="text-right py-3 px-3 font-bold whitespace-nowrap">Valor (€)</th>
+              <th class="text-left py-3 px-3 font-bold whitespace-nowrap">Concluído</th>
+            </tr>
+          </thead>
+          <tbody id="detailsRows" class="divide-y"></tbody>
+        </table>
+      </div>
+
+      <div class="mt-3 text-xs text-gray-500">
+        Nota: esta secção consome <code>/api/metricas-costureiras/detalhes</code>. Se o endpoint ainda não existir, eu já deixei abaixo o “contrato” esperado no JS.
+      </div>
+    </div>
+
   </div>
 
 <script>
@@ -223,6 +285,116 @@
     setStatus('');
   }
 
+  function normalizeText(s){
+    return (s || '')
+      .toString()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g,'');
+  }
+
+  function applyDetailsSearch(){
+    const q = normalizeText(document.getElementById('detailsSearch').value);
+    const tbody = document.getElementById('detailsRows');
+    const rows = tbody.querySelectorAll('tr');
+    rows.forEach(tr => {
+      const hay = normalizeText(tr.getAttribute('data-search') || tr.textContent);
+      tr.style.display = (!q || hay.includes(q)) ? '' : 'none';
+    });
+  }
+
+  async function loadDetails(){
+    const ids = getSelectedIds();
+    const start = document.getElementById('startDate').value;
+    const end = document.getElementById('endDate').value;
+
+    if(!start || !end){
+      alert('Selecione Data Início e Data Fim.');
+      return;
+    }
+
+    setStatus('Carregando detalhes...');
+    const url = `/api/metricas-costureiras/detalhes?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&ids=${encodeURIComponent(ids.join(','))}`;
+    const r = await fetch(url, { credentials:'same-origin' });
+
+    let data = null;
+    try { data = await r.json(); } catch(e){}
+
+    if(!r.ok){
+      setStatus('');
+      alert((data && data.error) ? data.error : 'Erro ao buscar detalhes. (Endpoint /api/metricas-costureiras/detalhes)');
+      return;
+    }
+
+    const tbody = document.getElementById('detailsRows');
+    tbody.innerHTML = '';
+
+    // Contrato esperado do endpoint:
+    // data = {
+    //   rows: [
+    //     {
+    //       dia: "2026-03-02",
+    //       costureira: "Sueli",
+    //       cliente: "Maria Silva",
+    //       telefone: "9xxxxxxxx",
+    //       nif: "123456789" | null,
+    //       documento: "OT 2026/01" | "FR 2026/01" | null,
+    //       pedido_id: 123,
+    //       servico: "Bainha",
+    //       descricao: "Bainha calça jeans",
+    //       valor: 6.5,
+    //       concluido_em: "2026-03-02 18:22" | "2026-03-02"
+    //     }
+    //   ],
+    //   totais: { valor_total: 45.0, total_servicos: 6, total_pedidos: 2 }
+    // }
+
+    (data.rows || []).forEach(row => {
+      const tr = document.createElement('tr');
+
+      const dia = row.dia || '';
+      const costureira = row.costureira || '';
+      const cliente = row.cliente || '';
+      const telefone = row.telefone || '';
+      const nif = row.nif || '';
+      const documento = row.documento || '';
+      const pedido = (row.pedido_id ?? row.pedido ?? '');
+      const servico = row.servico || row.nome_servico || '';
+      const descricao = row.descricao || row.descricao_servico || row.obs || '';
+      const valor = row.valor ?? row.preco ?? row.valor_servico ?? 0;
+      const concluido = row.concluido_em || row.data_conclusao || '';
+
+      const searchBlob = [
+        dia, costureira, cliente, telefone, nif, documento, pedido, servico, descricao, valor, concluido
+      ].join(' | ');
+
+      tr.setAttribute('data-search', searchBlob);
+
+      tr.innerHTML = `
+        <td class="py-3 px-3 whitespace-nowrap">${dia}</td>
+        <td class="py-3 px-3 whitespace-nowrap">${costureira}</td>
+        <td class="py-3 px-3 whitespace-nowrap">${cliente}</td>
+        <td class="py-3 px-3 whitespace-nowrap">${telefone}</td>
+        <td class="py-3 px-3 whitespace-nowrap">${nif}</td>
+        <td class="py-3 px-3 whitespace-nowrap">${documento}</td>
+        <td class="py-3 px-3 whitespace-nowrap">${pedido}</td>
+        <td class="py-3 px-3 whitespace-nowrap">${servico}</td>
+        <td class="py-3 px-3">${descricao}</td>
+        <td class="py-3 px-3 text-right font-semibold whitespace-nowrap">${eur(valor)}</td>
+        <td class="py-3 px-3 whitespace-nowrap">${concluido}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    const totais = data.totais || {};
+    document.getElementById('detailsTotal').textContent = eur(totais.valor_total || 0);
+    document.getElementById('detailsServices').textContent = totais.total_servicos ?? (data.rows || []).length;
+    document.getElementById('detailsOrders').textContent = totais.total_pedidos ?? '—';
+
+    setStatus('');
+    applyDetailsSearch();
+  }
+
   function setDefaultDates(){
     const today = new Date();
     const end = today.toISOString().slice(0,10);
@@ -241,10 +413,13 @@
   document.getElementById('btnDaily').addEventListener('click', loadDaily);
   document.getElementById('btnMonth').addEventListener('click', loadMonth);
 
+  // NOVO
+  document.getElementById('btnDetails').addEventListener('click', loadDetails);
+  document.getElementById('detailsSearch').addEventListener('input', applyDetailsSearch);
+
   (async function init(){
     setDefaultDates();
     await loadSeamstresses();
-    // opcional: já calcula o mês ao abrir
     await loadMonth();
   })();
 </script>
