@@ -1117,15 +1117,40 @@ const handleClientSearch = async () => {
             const name = clientNameInput.value.trim();
             const phone = telefoneInput.value.trim();
             const nif = clientNifInput.value.trim();
-            if (!name || !phone) { alert('Nome e telefone são obrigatórios.'); return; }
+
+            if (!name || !phone) { 
+                alert('Nome e telefone são obrigatórios.'); 
+                return; 
+            }
+
             try {
                 const response = await fetch(`${API_URL}/clients`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name, phone, nif })
                 });
+
                 const result = await response.json();
-                if (!response.ok) throw new Error(result.error || 'Erro ao cadastrar.');
-                currentClient = { id: result.id_client, id_client: result.id_client, name: name, nif: nif };
+
+                if (!response.ok) {
+                    throw new Error(result.error || 'Erro ao cadastrar.');
+                }
+
+                // ✅ IMPORTANTE: aceitar id ou id_client (depende do backend)
+                const newClientId = result.id || result.id_client;
+
+                if (!newClientId) {
+                    throw new Error('Backend não retornou id do cliente.');
+                }
+
+                currentClient = { 
+                    id: newClientId, 
+                    id_client: newClientId, 
+                    name: name, 
+                    phone: phone,
+                    nif: nif 
+                };
+
                 clientDetailsInputDiv.classList.add('hidden');
                 clientInfoParagraph.innerHTML = `Cliente cadastrado: <strong class="text-purple-700">${name}</strong>`;
                 clientInfoParagraph.className = 'text-green-600 text-base font-semibold mt-3 h-6';
@@ -1236,7 +1261,12 @@ const handleClientSearch = async () => {
             const nif = nifInput.value.trim();
             if (!nif) { feedbackEl.textContent = 'Por favor, insira o NIF.'; feedbackEl.className = 'text-red-500 text-sm h-4 mt-1'; return; }
             try {
-                const clientId = currentClient.id_client || currentClient.id;
+          const clientId = currentClient?.id || currentClient?.id_client;
+
+          if (!clientId) {
+              alert("Erro: cliente não está corretamente definido. Refaça o cadastro ou selecione um cliente existente.");
+              return;
+          }
                 const response = await fetch(`${API_URL}/clients/${clientId}/nif`, {
                     method: 'PUT', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ nif: nif })
