@@ -1396,6 +1396,132 @@ def api_metricas_costureiras_mes():
     return jsonify({"month": month, "rows": per, "totais": {"total_costurado": total_geral, "total_trabalhos": trabalhos_geral}}), 200
 
 
+
+
+
+@app.get("/api/metricas-costureiras/detalhes")
+@login_required(["admin"])
+@handle_errors
+def api_metricas_costureiras_detalhes():
+    # Params:
+    #   start=YYYY-MM-DD
+    #   end=YYYY-MM-DD
+    #   ids=1,2,3 (id_seamstress)
+    start_str = (request.args.get("start") or "").strip()
+    end_str = (request.args.get("end") or "").strip()
+    ids_str = (request.args.get("ids") or "").strip()
+
+    if not start_str or not end_str:
+        return jsonify({"error": "start e end são obrigatórios (YYYY-MM-DD)."}), 400
+
+    try:
+        start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
+        end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
+    except Exception:
+        return jsonify({"error": "Formato inválido. Use YYYY-MM-DD."}), 400
+
+    if end_date < start_date:
+        return jsonify({"error": "Data fim deve ser maior ou igual a data início."}), 400
+
+    seam_ids = []
+    if ids_str:
+        for part in ids_str.split(","):
+            v = _to_int_or_none(part)
+            if v:
+                seam_ids.append(v)
+
+    where_ids = ""
+    params = [start_date, end_date]
+    if seam_ids:
+        where_ids = " AND ps.id_seamstress_conclusao = ANY(%s) "
+        params.append(seam_ids)
+
+    # Observação: o schema atual não tem campo "documento" em pedidos.
+    # Retornamos documento="" e usamos pedido_id para referência.
+    sql = f"""
+        SELECT
+            ps.data_conclusao::date AS dia,
+            ss.name AS costureira,
+            c.name AS cliente,
+            c.phone AS telefone,
+            COALESCE(c.nif,'') AS nif,
+            ''::text AS documento,
+            ps.id_pedido AS pedido_id,
+            s.name AS servico,
+            COALESCE(ps.description,'') AS descricao,
+            (s.price * COALESCE(ps.quantity,1))::numeric AS valor,
+            ps.data_conclusao AS concluido_em
+        FROM pedido_servicos ps
+        JOIN services s ON s.id_service = ps.id_service
+        JOIN seamstresses ss ON ss.id_seamstress = ps.id_seamstress_conclusao
+        JOIN pedidos p ON p.id_pedido = ps.id_pedido
+        JOIN clients c ON c.id_client = p.id_client
+        WHERE ps.status = 'Concluído'
+          AND ps.data_conclusao::date >= %s
+          AND ps.data_conclusao::date <= %s
+          {where_ids}
+        ORDER BY ps.data_conclusao DESC, ps.id_pedido_servico DESC
+    """
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall() or []
+
+    out = []
+    valor_total = 0.0
+    pedidos_set = set()
+
+    for r in rows:
+        dia = r.get("dia")
+        concluido_em = r.get("concluido_em")
+
+        dia_str = dia.strftime("%Y-%m-%d") if isinstance(dia, (date, datetime)) else None
+        if isinstance(concluido_em, datetime):
+            concluido_str = concluido_em.strftime("%Y-%m-%d %H:%M")
+        elif isinstance(concluido_em, date):
+            concluido_str = concluido_em.strftime("%Y-%m-%d")
+        else:
+            concluido_str = None
+
+        val = float(r.get("valor") or 0)
+        valor_total += val
+
+        pid = r.get("pedido_id")
+        if pid is not None:
+            pedidos_set.add(pid)
+
+        out.append(
+            {
+                "dia": dia_str,
+                "costureira": r.get("costureira"),
+                "cliente": r.get("cliente"),
+                "telefone": r.get("telefone"),
+                "nif": r.get("nif") or "",
+                "documento": r.get("documento") or "",
+                "pedido_id": pid,
+                "servico": r.get("servico"),
+                "descricao": r.get("descricao") or "",
+                "valor": val,
+                "concluido_em": concluido_str,
+            }
+        )
+
+    return (
+        jsonify(
+            {
+                "rows": out,
+                "totais": {
+                    "valor_total": valor_total,
+                    "total_servicos": len(out),
+                    "total_pedidos": len(pedidos_set),
+                },
+            }
+        ),
+        200,
+    )
+
+
 # -----------------------------------------------------------------------------
 # APIs do Painel Costureiras
 # -----------------------------------------------------------------------------
