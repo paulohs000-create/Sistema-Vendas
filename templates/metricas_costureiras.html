@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Métricas das Costureiras</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-[#f7f3f1]">
+  <div class="max-w-6xl mx-auto p-6">
+    <div class="flex items-start justify-between gap-4">
+      <div>
+        <h1 class="text-3xl md:text-4xl font-extrabold text-blue-700 flex items-center gap-2">
+          <span>📊</span> <span>Métricas das Costureiras</span>
+        </h1>
+        <p class="text-gray-600 mt-1">
+          Filtre por costureira e datas para ver <b>total costurado</b> e <b>total de trabalhos</b> (serviços concluídos).
+        </p>
+      </div>
+      <div class="flex items-center gap-2">
+        <a href="/admin" class="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold">
+          Voltar ao Dashboard
+        </a>
+      </div>
+    </div>
+
+    <!-- Filtros -->
+    <div class="mt-6 bg-white rounded-2xl shadow-sm border border-gray-200 p-5">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-end">
+        <div class="lg:col-span-4">
+          <label class="block text-sm font-semibold text-gray-700 mb-1">Costureira(s)</label>
+          <select id="seamstresses" multiple size="6"
+                  class="w-full rounded-xl border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400">
+          </select>
+          <div class="text-xs text-gray-500 mt-1">Dica: Ctrl/Cmd + clique para selecionar múltiplas.</div>
+        </div>
+
+        <div class="lg:col-span-3">
+          <label class="block text-sm font-semibold text-gray-700 mb-1">Data Início</label>
+          <input id="startDate" type="date"
+                 class="w-full rounded-xl border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400"/>
+        </div>
+
+        <div class="lg:col-span-3">
+          <label class="block text-sm font-semibold text-gray-700 mb-1">Data Fim</label>
+          <input id="endDate" type="date"
+                 class="w-full rounded-xl border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400"/>
+        </div>
+
+        <div class="lg:col-span-2 flex gap-2">
+          <button id="btnDaily"
+                  class="w-full px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold">
+            Filtrar Diário
+          </button>
+        </div>
+      </div>
+
+      <div class="mt-4 grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+        <div class="md:col-span-3">
+          <label class="block text-sm font-semibold text-gray-700 mb-1">Mês</label>
+          <input id="month" type="month"
+                 class="w-full rounded-xl border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400"/>
+          <div class="text-xs text-gray-500 mt-1">Total do mês para as costureiras selecionadas.</div>
+        </div>
+
+        <div class="md:col-span-3">
+          <button id="btnMonth"
+                  class="w-full px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold">
+            Calcular Mês
+          </button>
+        </div>
+
+        <div class="md:col-span-6">
+          <div id="status" class="text-sm text-gray-600"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Totais do mês -->
+    <div class="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5">
+        <div class="text-sm text-gray-500">Total do Mês</div>
+        <div id="monthTotal" class="text-3xl font-extrabold mt-2 text-emerald-700">—</div>
+      </div>
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5">
+        <div class="text-sm text-gray-500">Trabalhos no Mês</div>
+        <div id="monthJobs" class="text-3xl font-extrabold mt-2 text-emerald-700">—</div>
+      </div>
+      <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5">
+        <div class="text-sm text-gray-500">Mês Selecionado</div>
+        <div id="monthLabel" class="text-2xl font-bold mt-3 text-gray-800">—</div>
+      </div>
+    </div>
+
+    <!-- Tabela diário -->
+    <div class="mt-6 bg-white rounded-2xl shadow-sm border border-gray-200 p-5">
+      <div class="flex items-center justify-between">
+        <h2 class="text-xl font-bold text-green-700">Métricas Diárias (Total por Dia)</h2>
+        <div class="text-sm text-gray-500">* serviços concluídos</div>
+      </div>
+
+      <div class="mt-4 overflow-auto">
+        <table class="min-w-full text-sm">
+          <thead>
+            <tr class="bg-blue-600 text-white">
+              <th class="text-left py-3 px-3 font-bold">Costureira</th>
+              <th class="text-left py-3 px-3 font-bold">Dia</th>
+              <th class="text-right py-3 px-3 font-bold">Total Costurado (€)</th>
+              <th class="text-right py-3 px-3 font-bold">Total Trabalhos</th>
+            </tr>
+          </thead>
+          <tbody id="dailyRows" class="divide-y"></tbody>
+        </table>
+      </div>
+
+      <div class="mt-4 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+        <div class="text-sm text-gray-600">
+          <b>Total no período:</b> <span id="dailyTotal">—</span> ·
+          <b>Trabalhos:</b> <span id="dailyJobs">—</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  function eur(v){
+    try{
+      return new Intl.NumberFormat('pt-PT', { style:'currency', currency:'EUR' }).format(Number(v||0));
+    }catch(e){
+      return (v||0) + " €";
+    }
+  }
+
+  function setStatus(msg){ document.getElementById('status').textContent = msg || ""; }
+
+  function getSelectedIds(){
+    const sel = document.getElementById('seamstresses');
+    const ids = [];
+    for(const opt of sel.options){
+      if(opt.selected) ids.push(opt.value);
+    }
+    return ids;
+  }
+
+  async function loadSeamstresses(){
+    const r = await fetch('/seamstresses', { credentials:'same-origin' });
+    const data = await r.json();
+    const sel = document.getElementById('seamstresses');
+    sel.innerHTML = '';
+    (data || []).forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = s.name;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function loadDaily(){
+    const ids = getSelectedIds();
+    const start = document.getElementById('startDate').value;
+    const end = document.getElementById('endDate').value;
+
+    if(!start || !end){
+      alert('Selecione Data Início e Data Fim.');
+      return;
+    }
+
+    setStatus('Carregando diário...');
+    const url = `/api/metricas-costureiras/diario?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&ids=${encodeURIComponent(ids.join(','))}`;
+    const r = await fetch(url, { credentials:'same-origin' });
+    const data = await r.json();
+
+    if(!r.ok){
+      setStatus('');
+      alert(data.error || 'Erro ao buscar métricas diárias.');
+      return;
+    }
+
+    const tbody = document.getElementById('dailyRows');
+    tbody.innerHTML = '';
+
+    (data.rows || []).forEach(row => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="py-3 px-3">${row.costureira || ''}</td>
+        <td class="py-3 px-3">${row.dia || ''}</td>
+        <td class="py-3 px-3 text-right font-semibold">${eur(row.total_costurado)}</td>
+        <td class="py-3 px-3 text-right font-semibold">${row.total_trabalhos ?? 0}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    document.getElementById('dailyTotal').textContent = eur((data.totais||{}).total_costurado || 0);
+    document.getElementById('dailyJobs').textContent = ((data.totais||{}).total_trabalhos || 0);
+
+    setStatus('');
+  }
+
+  async function loadMonth(){
+    const ids = getSelectedIds();
+    const month = document.getElementById('month').value;
+
+    if(!month){
+      alert('Selecione o mês.');
+      return;
+    }
+
+    setStatus('Carregando mês...');
+    const url = `/api/metricas-costureiras/mes?month=${encodeURIComponent(month)}&ids=${encodeURIComponent(ids.join(','))}`;
+    const r = await fetch(url, { credentials:'same-origin' });
+    const data = await r.json();
+
+    if(!r.ok){
+      setStatus('');
+      alert(data.error || 'Erro ao buscar métricas do mês.');
+      return;
+    }
+
+    document.getElementById('monthTotal').textContent = eur((data.totais||{}).total_costurado || 0);
+    document.getElementById('monthJobs').textContent = (data.totais||{}).total_trabalhos || 0;
+    document.getElementById('monthLabel').textContent = data.month || month;
+
+    setStatus('');
+  }
+
+  function setDefaultDates(){
+    const today = new Date();
+    const end = today.toISOString().slice(0,10);
+    const startObj = new Date(today);
+    startObj.setDate(startObj.getDate() - 7);
+    const start = startObj.toISOString().slice(0,10);
+
+    document.getElementById('startDate').value = start;
+    document.getElementById('endDate').value = end;
+
+    const ym = end.slice(0,7);
+    document.getElementById('month').value = ym;
+    document.getElementById('monthLabel').textContent = ym;
+  }
+
+  document.getElementById('btnDaily').addEventListener('click', loadDaily);
+  document.getElementById('btnMonth').addEventListener('click', loadMonth);
+
+  (async function init(){
+    setDefaultDates();
+    await loadSeamstresses();
+    // opcional: já calcula o mês ao abrir
+    await loadMonth();
+  })();
+</script>
+</body>
+</html>
