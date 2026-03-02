@@ -121,22 +121,23 @@
       </div>
     </div>
 
-    <!-- NOVO: Detalhes dos serviços/pedidos -->
+    <!-- Detalhes -->
     <div class="mt-6 bg-white rounded-2xl shadow-sm border border-gray-200 p-5">
       <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
         <div>
           <h2 class="text-xl font-bold text-gray-800">Detalhes dos Serviços (Pedidos)</h2>
           <div class="text-sm text-gray-500">
-            Mostra os serviços concluídos no período com informações do cliente e do pedido.
+            Lista automaticamente os serviços concluídos do período (cliente + pedido + serviço + valor).
           </div>
         </div>
 
         <div class="flex flex-col sm:flex-row gap-2 sm:items-center">
           <input id="detailsSearch" type="text" placeholder="Pesquisar (cliente, serviço, descrição, doc, nif...)"
                  class="w-full sm:w-80 rounded-xl border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+          <!-- botão mantido (útil), mas não é mais obrigatório -->
           <button id="btnDetails"
                   class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold">
-            Carregar Detalhes
+            Atualizar Detalhes
           </button>
         </div>
       </div>
@@ -177,8 +178,8 @@
         </table>
       </div>
 
-      <div class="mt-3 text-xs text-gray-500">
-        Nota: esta secção consome <code>/api/metricas-costureiras/detalhes</code>. Se o endpoint ainda não existir, eu já deixei abaixo o “contrato” esperado no JS.
+      <div id="detailsHint" class="mt-3 text-xs text-gray-500">
+        (Auto) Esta secção consome <code>/api/metricas-costureiras/detalhes</code>.
       </div>
     </div>
 
@@ -217,74 +218,6 @@
     });
   }
 
-  async function loadDaily(){
-    const ids = getSelectedIds();
-    const start = document.getElementById('startDate').value;
-    const end = document.getElementById('endDate').value;
-
-    if(!start || !end){
-      alert('Selecione Data Início e Data Fim.');
-      return;
-    }
-
-    setStatus('Carregando diário...');
-    const url = `/api/metricas-costureiras/diario?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&ids=${encodeURIComponent(ids.join(','))}`;
-    const r = await fetch(url, { credentials:'same-origin' });
-    const data = await r.json();
-
-    if(!r.ok){
-      setStatus('');
-      alert(data.error || 'Erro ao buscar métricas diárias.');
-      return;
-    }
-
-    const tbody = document.getElementById('dailyRows');
-    tbody.innerHTML = '';
-
-    (data.rows || []).forEach(row => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td class="py-3 px-3">${row.costureira || ''}</td>
-        <td class="py-3 px-3">${row.dia || ''}</td>
-        <td class="py-3 px-3 text-right font-semibold">${eur(row.total_costurado)}</td>
-        <td class="py-3 px-3 text-right font-semibold">${row.total_trabalhos ?? 0}</td>
-      `;
-      tbody.appendChild(tr);
-    });
-
-    document.getElementById('dailyTotal').textContent = eur((data.totais||{}).total_costurado || 0);
-    document.getElementById('dailyJobs').textContent = ((data.totais||{}).total_trabalhos || 0);
-
-    setStatus('');
-  }
-
-  async function loadMonth(){
-    const ids = getSelectedIds();
-    const month = document.getElementById('month').value;
-
-    if(!month){
-      alert('Selecione o mês.');
-      return;
-    }
-
-    setStatus('Carregando mês...');
-    const url = `/api/metricas-costureiras/mes?month=${encodeURIComponent(month)}&ids=${encodeURIComponent(ids.join(','))}`;
-    const r = await fetch(url, { credentials:'same-origin' });
-    const data = await r.json();
-
-    if(!r.ok){
-      setStatus('');
-      alert(data.error || 'Erro ao buscar métricas do mês.');
-      return;
-    }
-
-    document.getElementById('monthTotal').textContent = eur((data.totais||{}).total_costurado || 0);
-    document.getElementById('monthJobs').textContent = (data.totais||{}).total_trabalhos || 0;
-    document.getElementById('monthLabel').textContent = data.month || month;
-
-    setStatus('');
-  }
-
   function normalizeText(s){
     return (s || '')
       .toString()
@@ -303,17 +236,36 @@
     });
   }
 
-  async function loadDetails(){
+  // --- Controle simples para evitar chamadas duplicadas ---
+  let lastDetailsKey = "";
+  let detailsLoading = false;
+
+  function getDetailsKey(){
+    const ids = getSelectedIds().join(',');
+    const start = document.getElementById('startDate').value;
+    const end = document.getElementById('endDate').value;
+    return `${start}|${end}|${ids}`;
+  }
+
+  async function loadDetails(force=false){
     const ids = getSelectedIds();
     const start = document.getElementById('startDate').value;
     const end = document.getElementById('endDate').value;
 
     if(!start || !end){
-      alert('Selecione Data Início e Data Fim.');
-      return;
+      return; // não alerta aqui pra não ficar chato; o diário já valida
     }
 
-    setStatus('Carregando detalhes...');
+    const key = getDetailsKey();
+    if(!force && key === lastDetailsKey) {
+      applyDetailsSearch();
+      return;
+    }
+    if(detailsLoading) return;
+
+    detailsLoading = true;
+    lastDetailsKey = key;
+
     const url = `/api/metricas-costureiras/detalhes?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&ids=${encodeURIComponent(ids.join(','))}`;
     const r = await fetch(url, { credentials:'same-origin' });
 
@@ -321,33 +273,20 @@
     try { data = await r.json(); } catch(e){}
 
     if(!r.ok){
-      setStatus('');
-      alert((data && data.error) ? data.error : 'Erro ao buscar detalhes. (Endpoint /api/metricas-costureiras/detalhes)');
+      // se endpoint ainda não existir/der erro, só limpa e não “quebra” a página
+      document.getElementById('detailsRows').innerHTML = '';
+      document.getElementById('detailsTotal').textContent = '—';
+      document.getElementById('detailsServices').textContent = '—';
+      document.getElementById('detailsOrders').textContent = '—';
+      document.getElementById('detailsHint').textContent = 'Detalhes indisponíveis (endpoint /api/metricas-costureiras/detalhes).';
+      detailsLoading = false;
       return;
     }
 
+    document.getElementById('detailsHint').innerHTML = '(Auto) Esta secção consome <code>/api/metricas-costureiras/detalhes</code>.';
+
     const tbody = document.getElementById('detailsRows');
     tbody.innerHTML = '';
-
-    // Contrato esperado do endpoint:
-    // data = {
-    //   rows: [
-    //     {
-    //       dia: "2026-03-02",
-    //       costureira: "Sueli",
-    //       cliente: "Maria Silva",
-    //       telefone: "9xxxxxxxx",
-    //       nif: "123456789" | null,
-    //       documento: "OT 2026/01" | "FR 2026/01" | null,
-    //       pedido_id: 123,
-    //       servico: "Bainha",
-    //       descricao: "Bainha calça jeans",
-    //       valor: 6.5,
-    //       concluido_em: "2026-03-02 18:22" | "2026-03-02"
-    //     }
-    //   ],
-    //   totais: { valor_total: 45.0, total_servicos: 6, total_pedidos: 2 }
-    // }
 
     (data.rows || []).forEach(row => {
       const tr = document.createElement('tr');
@@ -391,8 +330,80 @@
     document.getElementById('detailsServices').textContent = totais.total_servicos ?? (data.rows || []).length;
     document.getElementById('detailsOrders').textContent = totais.total_pedidos ?? '—';
 
-    setStatus('');
+    detailsLoading = false;
     applyDetailsSearch();
+  }
+
+  async function loadDaily(){
+    const ids = getSelectedIds();
+    const start = document.getElementById('startDate').value;
+    const end = document.getElementById('endDate').value;
+
+    if(!start || !end){
+      alert('Selecione Data Início e Data Fim.');
+      return;
+    }
+
+    setStatus('Carregando diário...');
+    const url = `/api/metricas-costureiras/diario?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&ids=${encodeURIComponent(ids.join(','))}`;
+    const r = await fetch(url, { credentials:'same-origin' });
+    const data = await r.json();
+
+    if(!r.ok){
+      setStatus('');
+      alert(data.error || 'Erro ao buscar métricas diárias.');
+      return;
+    }
+
+    const tbody = document.getElementById('dailyRows');
+    tbody.innerHTML = '';
+
+    (data.rows || []).forEach(row => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="py-3 px-3">${row.costureira || ''}</td>
+        <td class="py-3 px-3">${row.dia || ''}</td>
+        <td class="py-3 px-3 text-right font-semibold">${eur(row.total_costurado)}</td>
+        <td class="py-3 px-3 text-right font-semibold">${row.total_trabalhos ?? 0}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    document.getElementById('dailyTotal').textContent = eur((data.totais||{}).total_costurado || 0);
+    document.getElementById('dailyJobs').textContent = ((data.totais||{}).total_trabalhos || 0);
+
+    setStatus('');
+
+    // ✅ AQUI está o que você pediu:
+    // Ao filtrar diário, carrega automaticamente os detalhes (ex.: se diário deu 5 trabalhos, lista os 5).
+    await loadDetails(true);
+  }
+
+  async function loadMonth(){
+    const ids = getSelectedIds();
+    const month = document.getElementById('month').value;
+
+    if(!month){
+      alert('Selecione o mês.');
+      return;
+    }
+
+    setStatus('Carregando mês...');
+    const url = `/api/metricas-costureiras/mes?month=${encodeURIComponent(month)}&ids=${encodeURIComponent(ids.join(','))}`;
+    const r = await fetch(url, { credentials:'same-origin' });
+    const data = await r.json();
+
+    if(!r.ok){
+      setStatus('');
+      alert(data.error || 'Erro ao buscar métricas do mês.');
+      return;
+    }
+
+    document.getElementById('monthTotal').textContent = eur((data.totais||{}).total_costurado || 0);
+    document.getElementById('monthJobs').textContent = (data.totais||{}).total_trabalhos || 0;
+    document.getElementById('monthLabel').textContent = data.month || month;
+
+    setStatus('');
   }
 
   function setDefaultDates(){
@@ -410,17 +421,37 @@
     document.getElementById('monthLabel').textContent = ym;
   }
 
+  // Debounce para auto-atualizar ao mudar filtros
+  let autoTimer = null;
+  function scheduleAutoRefresh(){
+    if(autoTimer) clearTimeout(autoTimer);
+    autoTimer = setTimeout(async () => {
+      // só dispara se tiver datas válidas
+      const start = document.getElementById('startDate').value;
+      const end = document.getElementById('endDate').value;
+      if(!start || !end) return;
+      await loadDaily(); // loadDaily já chama loadDetails()
+    }, 350);
+  }
+
   document.getElementById('btnDaily').addEventListener('click', loadDaily);
   document.getElementById('btnMonth').addEventListener('click', loadMonth);
 
-  // NOVO
-  document.getElementById('btnDetails').addEventListener('click', loadDetails);
+  // botão de detalhes agora só força refresh manual
+  document.getElementById('btnDetails').addEventListener('click', () => loadDetails(true));
   document.getElementById('detailsSearch').addEventListener('input', applyDetailsSearch);
+
+  // ✅ auto ao mudar filtros
+  document.getElementById('startDate').addEventListener('change', scheduleAutoRefresh);
+  document.getElementById('endDate').addEventListener('change', scheduleAutoRefresh);
+  document.getElementById('seamstresses').addEventListener('change', scheduleAutoRefresh);
 
   (async function init(){
     setDefaultDates();
     await loadSeamstresses();
     await loadMonth();
+    // já puxa de início também
+    await loadDaily();
   })();
 </script>
 </body>
