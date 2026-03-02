@@ -2319,13 +2319,38 @@ def rename_category(category: str):
 @login_required(["admin"])
 @handle_errors
 def delete_category(category: str):
-    """Apaga uma categoria removendo todos os serviços dentro dela."""
+    """
+    Deleta uma categoria APENAS se nenhum serviço dessa categoria estiver referenciado
+    na tabela pedido_servicos. Isso evita violar FK e quebrar histórico.
+    """
     cat = (category or "").strip()
     if not cat:
         return jsonify({"error": "Categoria inválida."}), 400
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
+            # Se existir qualquer pedido_servico usando um service desta categoria, bloqueia
+            cur.execute(
+                """
+                SELECT 1
+                FROM pedido_servicos ps
+                JOIN services s ON s.id_service = ps.id_service
+                WHERE s.category = %s
+                LIMIT 1
+                """,
+                (cat,),
+            )
+            if cur.fetchone():
+                return (
+                    jsonify(
+                        {
+                            "error": "Não é possível deletar esta categoria. Existem serviços vinculados a pedidos."
+                        }
+                    ),
+                    400,
+                )
+
+            # Sem vínculos -> pode apagar os services da categoria
             cur.execute("DELETE FROM services WHERE category = %s", (cat,))
             deleted = cur.rowcount
         conn.commit()
