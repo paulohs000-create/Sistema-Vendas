@@ -319,6 +319,12 @@ ADMIN_HTML = """<!DOCTYPE html>
           <div class="text-xs text-white/60 ml-6">Pendências e conclusão</div>
         </a>
 
+
+        <a href="/metricas-costureiras" class="block px-3 py-2 rounded-xl hover:bg-white/10">
+          📊 <span class="ml-2">Métricas Costureiras</span>
+          <div class="text-xs text-white/60 ml-6">Totais por dia e mês</div>
+        </a>
+
         <a href="/controle-caixa" class="block px-3 py-2 rounded-xl hover:bg-white/10">
           💳 <span class="ml-2">Controle de Caixa</span>
           <div class="text-xs text-white/60 ml-6">Cartão, NIF e exportação</div>
@@ -557,6 +563,12 @@ CONTROLE_CAIXA_HTML = """
         <a href="/costureiras" class="block px-3 py-2 rounded-xl hover:bg-white/10">
           🧵 <span class="ml-2">Painel Costureiras</span>
           <div class="text-xs text-white/60 ml-6">Pendências e conclusão</div>
+        </a>
+
+
+        <a href="/metricas-costureiras" class="block px-3 py-2 rounded-xl hover:bg-white/10">
+          📊 <span class="ml-2">Métricas Costureiras</span>
+          <div class="text-xs text-white/60 ml-6">Totais por dia e mês</div>
         </a>
 
         <a href="/controle-caixa" class="block px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15">
@@ -834,6 +846,12 @@ EXPORTACOES_CAIXA_HTML = """
         <a href="/costureiras" class="block px-3 py-2 rounded-xl hover:bg-white/10">
           🧵 <span class="ml-2">Painel Costureiras</span>
           <div class="text-xs text-white/60 ml-6">Pendências e conclusão</div>
+        </a>
+
+
+        <a href="/metricas-costureiras" class="block px-3 py-2 rounded-xl hover:bg-white/10">
+          📊 <span class="ml-2">Métricas Costureiras</span>
+          <div class="text-xs text-white/60 ml-6">Totais por dia e mês</div>
         </a>
 
         <a href="/controle-caixa" class="block px-3 py-2 rounded-xl hover:bg-white/10">
@@ -1216,6 +1234,166 @@ def serve_management_page():
 @handle_errors
 def serve_seamstress_page():
     return render_template("costureiras.html")
+
+
+@app.get("/metricas-costureiras")
+@login_required(["admin"])
+def metricas_costureiras_page():
+    # Página nova (template separado) para não arriscar quebrar nada existente
+    return render_template("metricas_costureiras.html", user=session.get("user"))
+
+
+@app.get("/api/metricas-costureiras/diario")
+@login_required(["admin"])
+@handle_errors
+def api_metricas_costureiras_diario():
+    # Params:
+    #   start=YYYY-MM-DD
+    #   end=YYYY-MM-DD
+    #   ids=1,2,3 (id_seamstress)
+    start_str = (request.args.get("start") or "").strip()
+    end_str = (request.args.get("end") or "").strip()
+    ids_str = (request.args.get("ids") or "").strip()
+
+    if not start_str or not end_str:
+        return jsonify({"error": "start e end são obrigatórios (YYYY-MM-DD)."}), 400
+
+    try:
+        start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
+        end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
+    except Exception:
+        return jsonify({"error": "Formato inválido. Use YYYY-MM-DD."}), 400
+
+    if end_date < start_date:
+        return jsonify({"error": "Data fim deve ser maior ou igual a data início."}), 400
+
+    seam_ids = []
+    if ids_str:
+        for part in ids_str.split(","):
+            v = _to_int_or_none(part)
+            if v:
+                seam_ids.append(v)
+
+    where_ids = ""
+    params = [start_date, end_date]
+    if seam_ids:
+        where_ids = " AND ps.id_seamstress_conclusao = ANY(%s) "
+        params.append(seam_ids)
+
+    sql = f"""
+        SELECT
+            ss.id_seamstress,
+            ss.name AS costureira,
+            ps.data_conclusao::date AS dia,
+            COALESCE(SUM(s.price * COALESCE(ps.quantity,1)),0)::numeric AS total_costurado,
+            COALESCE(SUM(COALESCE(ps.quantity,1)),0)::int AS total_trabalhos,
+            COUNT(*)::int AS total_servicos
+        FROM pedido_servicos ps
+        JOIN services s ON s.id_service = ps.id_service
+        JOIN seamstresses ss ON ss.id_seamstress = ps.id_seamstress_conclusao
+        WHERE ps.status = 'Concluído'
+          AND ps.data_conclusao::date >= %s
+          AND ps.data_conclusao::date <= %s
+          {where_ids}
+        GROUP BY ss.id_seamstress, ss.name, ps.data_conclusao::date
+        ORDER BY ss.name ASC, dia DESC
+    """
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall() or []
+
+    out = []
+    for r in rows:
+        out.append(
+            {
+                "id_seamstress": r.get("id_seamstress"),
+                "costureira": r.get("costureira"),
+                "dia": r.get("dia").strftime("%Y-%m-%d") if r.get("dia") else None,
+                "total_costurado": float(r.get("total_costurado") or 0),
+                "total_trabalhos": int(r.get("total_trabalhos") or 0),
+                "total_servicos": int(r.get("total_servicos") or 0),
+            }
+        )
+
+    total_geral = sum(x["total_costurado"] for x in out)
+    trabalhos_geral = sum(x["total_trabalhos"] for x in out)
+
+    return jsonify({"rows": out, "totais": {"total_costurado": total_geral, "total_trabalhos": trabalhos_geral}}), 200
+
+
+@app.get("/api/metricas-costureiras/mes")
+@login_required(["admin"])
+@handle_errors
+def api_metricas_costureiras_mes():
+    # Params:
+    #   month=YYYY-MM
+    #   ids=1,2,3
+    month = (request.args.get("month") or "").strip()
+    ids_str = (request.args.get("ids") or "").strip()
+
+    if not month or len(month) != 7 or "-" not in month:
+        today = date.today()
+        month = f"{today.year:04d}-{today.month:02d}"
+
+    start_month, next_month = _month_range(month)
+
+    seam_ids = []
+    if ids_str:
+        for part in ids_str.split(","):
+            v = _to_int_or_none(part)
+            if v:
+                seam_ids.append(v)
+
+    where_ids = ""
+    params = [start_month, next_month]
+    if seam_ids:
+        where_ids = " AND ps.id_seamstress_conclusao = ANY(%s) "
+        params.append(seam_ids)
+
+    sql = f"""
+        SELECT
+            ss.id_seamstress,
+            ss.name AS costureira,
+            COALESCE(SUM(s.price * COALESCE(ps.quantity,1)),0)::numeric AS total_costurado,
+            COALESCE(SUM(COALESCE(ps.quantity,1)),0)::int AS total_trabalhos,
+            COUNT(*)::int AS total_servicos
+        FROM pedido_servicos ps
+        JOIN services s ON s.id_service = ps.id_service
+        JOIN seamstresses ss ON ss.id_seamstress = ps.id_seamstress_conclusao
+        WHERE ps.status = 'Concluído'
+          AND ps.data_conclusao::date >= %s
+          AND ps.data_conclusao::date < %s
+          {where_ids}
+        GROUP BY ss.id_seamstress, ss.name
+        ORDER BY ss.name ASC
+    """
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall() or []
+
+    per = []
+    total_geral = 0.0
+    trabalhos_geral = 0
+    for r in rows:
+        total = float(r.get("total_costurado") or 0)
+        trab = int(r.get("total_trabalhos") or 0)
+        total_geral += total
+        trabalhos_geral += trab
+        per.append(
+            {
+                "id_seamstress": r.get("id_seamstress"),
+                "costureira": r.get("costureira"),
+                "total_costurado": total,
+                "total_trabalhos": trab,
+                "total_servicos": int(r.get("total_servicos") or 0),
+            }
+        )
+
+    return jsonify({"month": month, "rows": per, "totais": {"total_costurado": total_geral, "total_trabalhos": trabalhos_geral}}), 200
 
 
 # -----------------------------------------------------------------------------
